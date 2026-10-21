@@ -1,0 +1,2834 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- viewport-fit=cover:让网页铺满整块屏(含刘海/灵动岛那一条和底部 Home Indicator 那一条),
+     安全区再由 env(safe-area-inset-*) 让内容避开。两者缺一不可:
+     只写 cover 内容会被刘海吃掉,只写安全区则铺不满、上下留黑边。 -->
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<!-- 这两条是「从主屏打开 = 没有地址栏、没有底部工具栏」的开关。
+     apple- 那条是 iOS 认的,不带前缀那条是标准的(安卓/桌面 Chrome 认)。 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Intertidal">
+<!-- ⚠️ 状态栏刻意用 default,**不要 black-translucent**:
+     那个值会把状态栏文字锁成白色,而这套皮肤默认是浅色纸 —— 白字打在米白上等于看不见。
+     用 default + theme-color,iOS 15 起会拿 theme-color 填状态栏那一条并自动挑可读的字色;
+     下面的 JS 还会让 theme-color 跟着当前皮肤走,所以那一条和页面底色永远是同一个色,看不出接缝。 -->
+<!-- ⚠️⚠️ 2026-10-12 深夜试过 black-translucent(要「他」页照片铺到状态栏底下),**当晚改回 default,别再试**:
+     iOS 26 在 translucent 时会在屏顶自己盖一层毛玻璃(约 75pt,比状态栏还深一截,不认顶上的不透明 .topcap),
+     Chats 标题、聊天页顶栏、「他」页照片顶上全被糊;她真机看完「改回去吧」。主屏网页 App 做不到「铺到顶又不糊」。 -->
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<!-- ⚠️ 2026-10-10:iOS 26 起 theme-color 不再被认,状态栏那条改由「顶边的固定元素」定色(见下面 .topcap)。
+     这几行 meta 和下面那段脚本留着给旧系统,别指望它们在 iOS 26 上起作用。 -->
+<meta name="theme-color" content="#f3f2f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1c1b19" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="icons/favicon-64.png" sizes="64x64">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="manifest" href="manifest.json">
+<!-- ⚠️ **状态栏那道分界线就是这段在修。**
+     iOS 在「添加到主屏幕」的 standalone 模式下,状态栏那一条由系统用 theme-color 填,
+     而且**只认冷启动那一刻的值** —— 页面跑起来之后再改 meta 它不认。
+     原来的同步写在主脚本里(要等整页解析完),于是:她选了墨白皮肤(页底 #fbfbfb),
+     状态栏却停在 #f4f4f4,中间就有一道看得见的横线。
+     解法:在 <head> 里、首次绘制之前,直接从 localStorage 读出皮肤并把 meta 改掉。
+     ⚠️ 这段必须留在 manifest 之后、样式之前,**别挪到 body 里**,挪了就又来不及了。 -->
+<script>
+(function () {
+  try {
+    var st = JSON.parse(localStorage.getItem("dwell-shell-v1") || "{}") || {};
+    var TOP = { ivory: "#f3f2f1", moonsand: "#efe7e5", cream: "#f5ede1",
+                fogmtn: "#23302a", fogblue: "#e8ecf2", inkwhite: "#fbfbfb" };
+    var skin = st.skin || "ivory";
+    var c = TOP[skin] || TOP.ivory;
+    /* 只有象牙纸张跟随昼夜,其余五款自带气质(和样式表里的规则一致) */
+    if (skin === "ivory") {
+      var dark = st.appearance === "dark" ||
+                 (st.appearance !== "light" && window.matchMedia &&
+                  matchMedia("(prefers-color-scheme: dark)").matches);
+      if (dark) c = "#1c1b19";
+    }
+    var ms = document.querySelectorAll('meta[name="theme-color"]');
+    for (var i = 0; i < ms.length; i++) ms[i].setAttribute("content", c);
+  } catch (e) {}
+})();
+</script>
+<!-- ============================================================
+     dwell —— 三栏外壳(2026-09-19)
+     Chats 点一行 → 用 iframe 把 chat.html(原来那整页聊天)推进来。
+     ⚠️ **聊天页一个字节没改**:所有者的要求是「chat 目前的 ui 不变,
+     点进去做聊天页」。那页里 43 处「照官端」是她一处处对齐的。
+     日记/待办/日历/健康那些屋子还没接进新壳,要接从 chat.html 里搬。
+     尺寸来自她 2026-09-19 那三张参考截图的像素实测;
+     那套数见 Ombre-Brain 的 dwell-bridge/MAINTENANCE.md。
+     ============================================================ -->
+<style>
+  /* 顶部安全区抬在根上,所以普通流里的内容天然避开刘海/灵动岛。
+     ⚠️ **底部不在这里抬**:底栏是 fixed 定位的,它自己带一份安全区内边距,
+     正文的下边距也已经把安全区算进去了(见 .screen)—— 在根上再抬一次就是抬两次。 */
+  /* 安全区收成两个变量,全页只认这两个:改一处、全页跟着走,
+     也便于测试里把它们改成假值来模拟一台有刘海的机器。 */
+  :root { color-scheme: light dark;
+          --sat: env(safe-area-inset-top, 0px);      /* 刘海 / 灵动岛那一条 */
+          --sab: env(safe-area-inset-bottom, 0px);   /* Home Indicator 那一条 */
+          padding-top: var(--sat); }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<title>Intertidal</title>
+</head>
+<body>
+<style>
+  /* ============================================================
+     设计 token(2026-09-19 重构)
+     ------------------------------------------------------------
+     基线仍是 09-19 那三张参考图的像素实测(iPhone 16 Pro 402×874pt,
+     2.5025 px/pt),这一轮按新参考图重排了**字重、字阶、间距节奏**。
+     ⚠️ 尺度全部落在一套 4/8/12/16/20/24/32 的阶梯上,别再零散地写死数字 ——
+     要改就改这里的 token,全页跟着走。
+     ⚠️ 圆角是普通 border-radius,**不要** corner-shape: squircle
+     (容器里的 chromium 认、Safari 不认,预览和真机会差很多)。
+     ============================================================ */
+  :root {
+    /* ---- 颜色:纸 / 卡 / 四级文字 ---- */
+    /* 纸(象牙纸张):页面底是一道从上到下的渐变,不是纯色;卡片是近白、不是纯白 */
+    --paper-top: #f3f2f1;
+    --paper-bot: #ebeae9;
+    --card: #fcfcfb;
+    --card-a: 1;
+    --ink: #1b191d;         /* 一级:标题与大数字 */
+    --ink-2: #55534e;       /* 二级:Us / Steps / Heart Rate 这类卡内小标签 */
+    --dim: #8a8984;         /* 三级:日期、单位、说明 */
+    --dim-2: #a9a7a1;       /* 四级:图例、区间 */
+    --line: #ecebea;
+    --deep: #1b191d;        /* 深色卡(Today's Whisper) */
+    --deep-ink: #f6f5f2;
+    --deep-dim: #9d9c98;
+    --spark: #e1734f;       /* 全页唯一的彩色:菊花与心率线 */
+    /* 阴影极轻:卡片只是「从纸上浮起来一点」,不是投影 */
+    /* ⚠️ 阴影照参考图收薄了一大截。判据是量出来的:在卡片正下方 3~7pt 处取色,
+       参考图 #f1f0ee(几乎等于页底),我原来 #e2e1e0(明显压暗)—— 影子太重。 */
+    --shade: 0 .5px 1px rgba(27,25,29,.018), 0 3px 10px rgba(27,25,29,.022);
+    --shade-lift: 0 1px 2px rgba(27,25,29,.03), 0 5px 16px rgba(27,25,29,.035);
+
+    /* ---- 间距阶梯(§3 那一套) ---- */
+    --sp-4: 4px;  --sp-8: 8px;   --sp-12: 12px; --sp-16: 16px;
+    --sp-20: 20px; --sp-24: 24px; --sp-32: 32px;
+
+    /* ---- 圆角阶梯 ---- */
+    /* 圆角照参考图实测(2026-09-19)。⚠️ **量法很要紧**:单点「拐平处」检测器不可靠
+       (JPEG 和 PNG 的抗锯齿不一样,同一个值能差 3pt)。正确做法是在距卡顶固定的几行
+       (3/6/10/16/24/34/46px)各量一次**左缩进**,两张图比整条曲线 —— 实测参考图
+       每一点都比 23px 那版大约 12%,反推 CSS 约 25px。 */
+    --r-sm: 12px; --r-md: 18px; --r-lg: 25px; --r-xl: 31px;
+
+    /* ---- 尺度 ---- */
+    /* 小屏(SE/mini)收窄到 14,常规屏 18:小屏上留白按比例走,不挤 */
+    /* 参考图实测:卡左边缘 43px。那张图右边被裁掉约 11px,按左右对称还原屏宽 1000px,
+       得 43/2.4876 = 17.3pt。**2026-09-19 实测,数会变** */
+    /* ⚠️ 2026-10-09 真机对标:参考图是 Pro Max(440pt),按 2.173px/pt 换算,字号用同一串字的墨宽/墨高比反推:卡左 14.7 / 右 17.7(截图有约 1.5pt 横移),取平均 16.2。
+       ~~17.3~~ 是把那张 Pro Max 的图当 402pt 宽算出来的,偏大。 */
+    --gutter: clamp(13px, 4.03vw, 16.2px);
+    --gap: 15px;            /* 卡片间距,横纵同一个数(10-09 真机对标:纵 14.8~15.9、横 14.8;~~13~~) */
+    --r-card: var(--r-lg);  /* 卡片圆角(15 点拟合稳定在 24~26) */
+    --r-inner: var(--r-md);
+    --pad: var(--sp-20);    /* 卡片内留白 */
+    --pad-deep: var(--pad); /* 深色卡内留白:和白卡同一个数,不开小灶 */
+    --row: 66.5px;          /* 会话行高(实测 66.6) */
+    --av: 40px;             /* 头像直径 */
+    --hair: .5px;
+    --tabbar-h: 40px;       /* 底栏内容高度,不含安全区。10-09:参考图底栏顶距屏底 74.3pt = 40 + 安全区 34(~~42~~) */
+
+    /* ---- 字族 —— 英文衬线当骨架,中文黑体当注解 ---- */
+    --serif: ui-serif, "New York", "Iowan Old Style", Georgia, "Times New Roman", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", "Segoe UI", sans-serif;
+    /* 中英混排的一行(天气 / Us 副标题):英文与数字走衬线,汉字落回苹方黑体。
+       参考图就是这样(「多云 27° 26~32°」「敏敏和 Claude,从 2026.6.22」)。
+       ⚠️ 汉字靠逐字回退落到 PingFang:衬线那几支都没有汉字。**别在这里挂 Songti**。 */
+    --serif-cn: ui-serif, "New York", "Iowan Old Style", Georgia, "PingFang SC", "Noto Sans SC", sans-serif;
+    /* ⚠️ 刻意不在 --serif 里挂 Songti SC 和 SerifNum:
+       参考图的中文标题是黑体加粗、数字是衬线,挂了这两样会全反过来 */
+
+    /* ---- 字阶(clamp:小屏自动缩,不 hardcode 截图尺寸) ---- */
+    /* ⚠️⚠️ **这一档字号是按 New York 的字面度量反推的,不是拿容器里的字对出来的。**
+       原来的做法是「调 font-size 直到本机 DejaVu 的墨高等于参考图的墨高」——
+       那是错的:她手机上是 New York,同一个 font-size 的墨高和 DejaVu 不一样,
+       于是预览对上了、真机反而偏大。正确做法是拿参考图的**墨高**除以 New York 的比例
+       (大写高 0.69em、大写顶到降部底 0.93em、数字 = 大写高)反推出 font-size。
+       2026-09-19 算出来的那一套就是下面这些数。**别再照本机预览调它们。** */
+    /* ⚠️ 2026-09-19 用**她真机截图**回算:39.5px 渲染出 43.7pt 墨高,参考图是 39.0 —— 大了 12%。
+       (此前按「0.93em」估的比例是错的:New York 的数字带降部,Day 35 的实测比例是 1.106em。)
+       39.0 ÷ 1.106 = 35.3 → 取 35.5。**这个数是真机回算的,别再照容器预览调。** */
+    /* ⚠️ 这个数被我来回改错过两次,写清楚免得再犯:
+       量法必须**统一用「卡内自适应阈值分带」**,别用跨卡的固定阈值 ——
+       后者会把相邻行并进来,量出来偏大,照它砍就会砍过头(39.5→35.5 就是这么错的)。
+       统一量法下:参考墨高 38.2pt,New York 的墨高/字号比实测 0.938 → 40.7px。 */
+    /* ⚠️⚠️ 下面这一档 2026-10-09 整体重定:两张都是 iPhone 真机截图(同为 New York),
+       所以直接拿**同一串字**的墨宽/墨高比乘当前字号,不再经过任何字体度量换算。
+       此前那几轮偏小,根因是把参考图(Pro Max 440pt)当成 402pt 宽来换算,每个数小了 9%。 */
+    /* ⚠️ 2026-10-10 所有者:「字体整体有点偏大」→ 整档乘一个系数,不逐个改上面量出来的数。
+       依据:10-09 那套是照 Pro Max(440pt 宽)的参考图按 pt 原样搬的,而她的手机是 402pt ——
+       同样的 pt 放在窄 9% 的屏上,相对就大了 9%。402/440 = 0.914,取 0.92。
+       **要回到 10-09 的样子把它改回 1;嫌还大 / 太小就只调这一个数。**
+       只管这一档 token(Home / Diary / 设置 / 底栏);Chats 列表那几个数是照她手机上的 Telegram 量的,不跟着缩。 */
+    --fs-k: .92;
+    --fs-display: calc(clamp(37px, 11.52vw, 46.3px) * var(--fs-k)); /* Day N:墨高比 1.153、墨宽比 1.135(~~40.7~~) */
+    --fs-greet:   calc(clamp(28px, 8.38vw, 33.7px) * var(--fs-k)); /* Good evening,:墨高比 1.074(~~31.5~~),字距另见 .greet */
+    --fs-metric:  calc(clamp(28px, 8.56vw, 34.4px) * var(--fs-k)); /* 113 vs 114 墨高比 1.076(~~32~~) */
+    --fs-title:    calc(24px * var(--fs-k));   /* 页标题 Chats / Settings / Diary */
+    --fs-metric-2: calc(20px * var(--fs-k));   /* 140 vs 164 墨高比 1.028(~~19.5~~) */
+    --fs-headline: calc(20.75px * var(--fs-k)); /* Monthly Anniversary 同一串字:墨宽比 1.063、墨高比 1.085(~~19.5~~) */
+    --fs-ring:     calc(20.5px * var(--fs-k)); /* 环里的数:墨高比 1.105(~~18.5~~) */
+    --fs-whisper:  calc(16.3px * var(--fs-k)); /* 深色卡正文:汉字墨高比 1.05(~~15.5~~) */
+    --fs-label:    calc(17.75px * var(--fs-k)); /* Us / Steps / Heart Rate 同串墨宽比 1.059 / 1.078 / 1.080(~~16.5~~) */
+    --fs-tab:      calc(16.5px * var(--fs-k)); /* Home 墨高比 1.056(~~16~~) */
+    --fs-body:     calc(15px * var(--fs-k));
+    --fs-sub:      calc(14.5px * var(--fs-k)); /* 天气、卡片副标题:参考 Aug 21 墨高 14.1 vs 真机 12.7 */
+    --fs-caption:  calc(13.5px * var(--fs-k));
+    --fs-datum:    calc(11px * var(--fs-k));   /* 图例、时间戳 */
+
+    /* ---- 动画 ---- */
+    /* 阻尼弹簧的真实采样(response .46 / dampingFraction .86 / 560ms,
+       过冲 0.5% —— 轻到只感觉得到「落位」,看不出回弹)。
+       不用 ease-in-out:那条曲线没有物理,收尾是软的、不是落位。 */
+    --spring: cubic-bezier(.22, 1, .3, 1);
+    --dur-reveal: 560ms;
+    --stagger: 45ms;
+    --ease-ui: cubic-bezier(.32, .72, 0, 1);
+  }
+  @supports (animation-timing-function: linear(0, 1)) {
+    :root {
+      --spring: linear(0.0000 0%, 0.0869 6.3%, 0.2647 12.5%, 0.4552 18.8%, 0.6223 25%,
+                       0.7534 31.3%, 0.8487 37.5%, 0.9138 43.8%, 0.9555 50%, 0.9807 56.3%,
+                       0.9947 62.5%, 1.0016 68.8%, 1.0045 75%, 1.0050 81.3%, 1.0045 87.5%,
+                       1.0036 93.8%, 1.0000 100%);
+    }
+  }
+
+  /* 只有「象牙纸张」跟随昼夜。其余五款皮肤自带气质,不受外观开关影响 */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]):not([data-skin]),
+    :root:not([data-theme="light"])[data-skin="ivory"] {
+      --paper-top: #1c1b19;
+      --paper-bot: #141312;
+      --card: #232220;
+      --ink: #f4f2ee;
+      --ink-2: #bcb9b1;
+      --dim: #8f8d87;
+      --dim-2: #6f6d67;
+      --line: #2e2c29;
+      --deep: #050505;
+      --deep-ink: #f4f2ee;
+      --deep-dim: #8a8884;
+      --shade: 0 .5px 1px rgba(0,0,0,.16), 0 3px 10px rgba(0,0,0,.18);
+      --shade-lift: 0 1px 2px rgba(0,0,0,.2), 0 5px 16px rgba(0,0,0,.24);
+    }
+  }
+  :root[data-theme="dark"]:not([data-skin]),
+  :root[data-theme="dark"][data-skin="ivory"] {
+    --paper-top: #1c1b19;
+    --paper-bot: #141312;
+    --card: #232220;
+    --ink: #f4f2ee;
+    --ink-2: #bcb9b1;
+    --dim: #8f8d87;
+    --dim-2: #6f6d67;
+    --line: #2e2c29;
+    --deep: #050505;
+    --deep-ink: #f4f2ee;
+    --deep-dim: #8a8884;
+    --shade: 0 .5px 1px rgba(0,0,0,.16), 0 3px 10px rgba(0,0,0,.18);
+    --shade-lift: 0 1px 2px rgba(0,0,0,.2), 0 5px 16px rgba(0,0,0,.24);
+  }
+
+  /* 另外五款皮肤:低饱和纸张,不是彩色环境光 */
+  :root[data-skin="moonsand"] {
+    --paper-top: #efe7e5; --paper-bot: #e6dcda; --card: #fbf6f5;
+    --ink: #221b1a; --ink-2: #5d5250; --dim: #8d7f7c; --dim-2: #ab9d99; --line: #ece1df;
+    --deep: #2a2120; --deep-ink: #f6efed; --deep-dim: #a1918d;
+  }
+  :root[data-skin="cream"] {
+    --paper-top: #f5ede1; --paper-bot: #eee3d3; --card: #fdf8f1;
+    --ink: #241d14; --ink-2: #5e5546; --dim: #8e8272; --dim-2: #ada08c; --line: #efe5d6;
+    --deep: #2b2317; --deep-ink: #f8f2e8; --deep-dim: #a39682;
+  }
+  :root[data-skin="fogmtn"] {
+    --paper-top: #23302a; --paper-bot: #1a2621; --card: #2b3b34;
+    --ink: #eef3ef; --ink-2: #c2cec7; --dim: #93a49b; --dim-2: #71837a; --line: #35473f;
+    --deep: #101815; --deep-ink: #eef3ef; --deep-dim: #8b9c93;
+    --shade: 0 .5px 1px rgba(0,0,0,.14), 0 3px 10px rgba(0,0,0,.16);
+    --shade-lift: 0 1px 2px rgba(0,0,0,.18), 0 5px 16px rgba(0,0,0,.22);
+  }
+  :root[data-skin="fogblue"] {
+    --paper-top: #e8ecf2; --paper-bot: #dde3ec; --card: #f7f9fc;
+    --ink: #181c23; --ink-2: #4e5663; --dim: #7d8694; --dim-2: #9aa3b0; --line: #e3e8f0;
+    --deep: #1d222b; --deep-ink: #f2f5f9; --deep-dim: #909aa8;
+  }
+  :root[data-skin="inkwhite"] {
+    --paper-top: #fbfbfb; --paper-bot: #f4f4f4; --card: #ffffff;
+    --ink: #111111; --ink-2: #53535a; --dim: #86868a; --dim-2: #a6a6aa; --line: #ededed;
+    --deep: #111111; --deep-ink: #fafafa; --deep-dim: #9a9a9e;
+  }
+
+  /* dvh:iOS 上地址栏收放会改 vh,用 dvh 才是「当前真实可视高度」。
+     写两行是渐进增强 —— 不认 dvh 的浏览器吃上面那行。 */
+  /* ⚠️ 这里**刻意不写 min-height: 100dvh**。body 的背景本来就会上抛到画布、
+     铺满整块屏,不需要靠视口单位去「撑」。全屏是 viewport 的事,不是 UI 的事。 */
+  html, body { margin: 0; }
+  body {
+    margin: 0;
+    /* body 的背景会上抛到画布,所以整块屏(含两条安全区)都是这个底,不会露白边。
+       渐变正好铺满一屏高,再往下自然接上 --paper-bot,看不出交界。
+       ⚠️ 原来写死的 880px 是照某一台机器的屏高定的,换机型就不对了。 */
+    background: var(--paper-bot);
+    background-image: linear-gradient(180deg, var(--paper-top) 0%, var(--paper-bot) 100%);
+    background-repeat: no-repeat;
+    /* ⚠️ 这里用 lvh 不用 dvh:dvh 会随地址栏收放实时变,
+       渐变就会在滚动到一半时被重新缩放、看得出来跳。lvh 是「最大视口高」,滚动中不变。
+       (min-height 那头仍然用 dvh —— 那里要的正是「当前真实可视高度」。) */
+    background-size: 100% 100vh;
+    background-size: 100% 100lvh;
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: var(--fs-body);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    font-variant-numeric: tabular-nums;
+    overscroll-behavior-y: none;
+    /* 长中文/长英文都要正常断行,绝不横向溢出 */
+    overflow-wrap: break-word;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  h1, h2, p { margin: 0; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 6px; }
+
+  /* ---------- 状态栏那一条:钉一块纯色(2026-10-10,所有者报「最上边会被模糊化一部分」) ----------
+     iOS 26 起,主屏网页 App 的状态栏那块由系统画:页面顶边**没有**固定定位的元素时,系统盖一层
+     软模糊、还往下渗一截,把 Chats / 日期那一行也糊掉;顶边**有**固定元素时改用纯色(取那个元素的底色)。
+     所以这里钉一块和页面顶部同色的固定条,换来干净的硬边。theme-color 在 iOS 26 已不认,靠不住。
+     ⚠️ 高度就是 --sat:浏览器里(没有安全区)它高 0,什么都不挡。z-index 在底栏(50)之上、聊天页(80)/设置(90)之下。 */
+  .topcap {
+    /* ⚠️ 2026-10-10 第二轮(她真机:「还是分层 顶部模糊」):WebKit 只在顶边那块**不透明、满宽、高过约 10px** 时才跳过模糊
+       (多个项目实测,见 dwell 手册)。她手机上状态栏那条在网页外面、--sat 是 0,这块原来高 0 = 不算数。所以至少 12px;
+       它盖住的是页面顶上本来就空着的留白。~~height: var(--sat)~~ */
+    position: fixed; top: 0; left: 0; right: 0; height: max(var(--sat), 12px); z-index: 60;
+    background: var(--paper-top); pointer-events: none;
+  }
+  /* ---------- 壳 ---------- */
+  .phone {
+    width: 100%;
+    max-width: 430px;          /* Pro Max 也是 430pt,再宽就居中留白 */
+    margin: 0 auto;
+    padding-inline: var(--gutter);
+    padding-block: var(--sp-16) 0;
+  }
+  /* 底部留够:底栏内容 + 安全区 + 一口气。不写死,换机型自己算 */
+  .screen { padding-bottom: calc(var(--tabbar-h) + var(--sab) + var(--sp-32)); }
+  .screen[hidden] { display: none !important; }
+
+  /* ---------- 卡 ---------- */
+  .card {
+    background: color-mix(in srgb, var(--card) calc(var(--card-a) * 100%), transparent);
+    border-radius: var(--r-card);
+    box-shadow: var(--shade);
+    padding: var(--pad);
+    -webkit-backdrop-filter: saturate(1.1) blur(14px);
+    backdrop-filter: saturate(1.1) blur(14px);
+  }
+  .stack { display: flex; flex-direction: column; gap: var(--gap); }
+  .duo { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
+
+  /* ---------- 字级 ----------
+     ⚠️ **字重是照参考图逐项定的,不是一律 700。** 三档,各管各的:
+       700 —— 英文大标题与大数字(Good evening / Day 35 / Monthly Anniversary / 580 / 114)
+              这一档要的是衬线的粗细对比(粗竖细横),「安卓味」的根因就是这里用了常规字重
+       600 —— 中量数字(27 / 164 / 331)与中文名。**它们不该和大标题一样重**:
+              参考图里这几个数明显比 Day 35 轻一档;中文名用 600 是因为汉字笔画密,
+              同样字号下 600 的视觉重量就已经等于拉丁 700,上 700 会糊成一团
+       400 —— 一切标签、日期、正文(Us / Steps / Heart Rate / Aug 21 / Jan 6 / 说明文字)
+     ⚠️ 字族同理分两支:**英文与数字走衬线,中文走黑体**。
+        参考图里 Aug 21 / Jan 6 / Jun 22 是**衬线**,别跟着中文副标题一起落回黑体。 */
+  /* ⚠️⚠️ **大标题不是 Bold,是 Medium。** 判据是参考图量出来的笔画比
+     (竖干厚度 ÷ 墨高,归一化后与同图的常规字相比):
+       Good evening 1.18×   Day 35 1.16×   Monthly Anniversary 1.20×   27 1.20×
+       164 1.46×   580 1.39×   Tab 选中 1.72×
+     —— 大标题只比常规字重 20%,那是 **500**;164/580 是 600;只有 Tab 选中才是 700。
+     **别再把它们拉回 700**:那会变成「粗体 UI 字体」,而参考图是精致的衬线排版。 */
+  .display  { font-family: var(--serif); font-size: var(--fs-display); font-weight: 500; line-height: 1.08; letter-spacing: -.018em; }
+  .title    { font-family: var(--serif); font-size: var(--fs-title); font-weight: 600; line-height: 1.1; letter-spacing: -.014em; }
+  .greet    { font-family: var(--serif); font-size: var(--fs-greet); font-weight: 500; line-height: 1.16; letter-spacing: 0; } /* 字距 10-09 归零:同串墨宽比 1.119 > 墨高比 1.074,多出来的是字距(~~-.014em~~) */
+  /* 中文名落回黑体(衬线没有汉字,硬挂上去会变宋体)。
+     字号压到 .96em、字重 600、字距收紧 —— 和英文标题咬在同一条视觉线上,不像一个普通 label */
+  .greet .cn{ font-family: var(--sans); font-weight: 500; font-size: .96em; letter-spacing: -.01em; }
+  /* 600 不是 500:真机笔画 8.9% vs 参考 13.0%,明显偏细 */
+  .headline { font-family: var(--serif); font-size: var(--fs-headline); font-weight: 600; line-height: 1.14; letter-spacing: -.01em; }
+  .name     { font-family: var(--serif); font-size: 16.5px; font-weight: 600; line-height: 1.25; }
+  .label    { font-family: var(--serif); font-size: var(--fs-label); font-weight: 400; color: var(--ink-2); line-height: 1.28; letter-spacing: -.004em; }
+  .datum    { font-family: var(--serif); font-size: var(--fs-datum); font-weight: 400; color: var(--dim); }
+  .body     { font-size: var(--fs-body); line-height: 1.6; }
+  .caption  { font-size: var(--fs-caption); line-height: 1.5; color: var(--dim); }
+  /* ⚠️ 二级不是三级。真机上这行是 #86868a,参考图是 #555455(副标题)/ #434343(Aug 21)——
+     **参考图全页只有两档文字色:近黑,和 #40~#57 的中灰。** --dim 那一档在参考图里根本没用到。 */
+  .sub      { font-size: var(--fs-sub); line-height: 1.45; color: var(--ink-2); }
+  /* 英文日期用的副标题:同一个字号,换衬线、字距回 0(照参考图) */
+  .sub.en   { font-family: var(--serif); letter-spacing: 0; }
+
+  /* 展示型数字一律**比例数字**,不用等宽。
+     body 上那条 tabular-nums 是给聊天/列表对齐用的;衬线的等宽数字在 40px 上
+     字怀被撑开、字距发散,正是「像 dashboard 不像杂志」的那种感觉。
+     这几个数是静态展示、不需要逐位对齐,所以在这里翻回比例数字。 */
+  .display, .metric .big, .anni .n, .ring .num {
+    font-variant-numeric: proportional-nums;
+  }
+
+  /* ---------- 首页头 ----------
+     节奏:日期行 →8→ 问候 →6→ 天气 →24→ 卡片流。
+     问候是全页第一焦点,它上下的呼吸要比别处宽。 */
+  .dayrow { display: flex; align-items: center; gap: var(--sp-8); margin-top: 3px; } /* 10-09:日期墨顶参考 89.3、我们 86.7 */
+  .dayrow .date {
+    /* ⚠️ 日期行是**中灰**不是近黑:参考 #575656,真机量到 #191919。字号按真机回算 18.5。 */
+    font-family: var(--serif); font-size: 19.5px; font-weight: 400; color: var(--ink-2); /* 10-09 墨高比 1.056(~~18.5~~) */
+    line-height: 1.2; flex: 1; min-width: 0; letter-spacing: -.008em;
+  }
+  .syncpill {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 28px; padding: 0 2px; border-radius: 14px;
+    /* 10-09 真机对标:参考图这里**没有胶囊底**,就是一行中灰字(墨色与日期同档)。~~卡片底 + 阴影 + 浅灰字~~ */
+    font-size: 12.5px; color: var(--ink-2); white-space: nowrap;
+  }
+  .iconbtn {
+    width: 30px; height: 30px; flex: none; border-radius: 50%;
+    /* 10-09:参考图齿轮没有圆底,图标 16.6pt、中灰(~~15px 浅灰 + 卡片圆底~~)。30px 留着当点按区 */
+    display: grid; place-items: center; color: var(--ink-2);
+    transition: transform .2s var(--ease-ui);
+  }
+  .iconbtn:active { transform: scale(.92); }
+  .greet   { margin-top: 4.3px; }   /* 10-09 按真机墨顶回算(~~2px~~) */
+  .weather { margin-top: 2.7px; color: var(--ink-2); font-family: var(--serif-cn); }  /* 数字衬线、汉字黑体,同参考图 */
+  .weather .soft { color: var(--dim-2); }   /* 温度区间再弱一级 */
+  .homefeed { margin-top: var(--sp-12); }
+
+  /* ---------- 深色卡(Today's Whisper) ----------
+     ⚠️ **高度绝不写死**:卡高 = 内容固有高度 + 内边距 + 内部间距。
+     文字长就自己变高,短就变矮,靠 flex 自然撑开,没有任何 height / 绝对定位。
+     结构:[图标(不压缩)] [内容列:正文 → 落款],内容列决定整卡高度。 */
+  .whisper {
+    background: var(--deep); color: var(--deep-ink);
+    border-radius: var(--r-card); padding: var(--pad-deep);
+    box-shadow: var(--shade-lift);
+    display: flex; gap: var(--sp-16); align-items: flex-start;   /* 10-09:头像右缘→正文 16.7pt(~~12~~) */
+    border: 0;
+  }
+  .whisper .av { flex: 0 0 auto; }          /* 文字再长也不压缩头像 */
+  .whisper .txt {
+    flex: 1 1 auto; min-width: 0;            /* min-width:0 才允许长词换行而不撑破 */
+    display: flex; flex-direction: column; align-items: flex-start;
+    /* ⚠️ 4px,不是 16 —— 参考图里落款几乎是接着正文下一行,
+       那点空隙是行盒自带的,不是额外间距。给多了整张卡就高出一截。 */
+    gap: 10px;   /* 10-09 真机回算(~~7px~~) */
+  }
+  .whisper .body {
+    font-size: var(--fs-whisper); line-height: 1.5; letter-spacing: .002em;
+    overflow-wrap: anywhere;                  /* 超长无空格串也不溢出 */
+  }
+  .whisper .more {
+    color: var(--deep-dim); font-family: var(--serif);
+    font-size: 13.6px; line-height: 1.2; letter-spacing: .01em;   /* Today's Whisper 同串墨宽比 1.132(~~12px~~) */
+  }
+
+  /* ---------- 头像 ---------- */
+  .av {
+    width: var(--av); height: var(--av); flex: none; border-radius: 50%;
+    position: relative; overflow: hidden;
+    background: linear-gradient(150deg, #6f6a63 0%, #3a3631 55%, #24211d 100%);
+  }
+  .av.sm { width: 42px; height: 42px; }   /* 10-09 参考约 42pt(~~38~~) */
+  .av .bloom {
+    position: absolute; left: 50%; top: 62%; width: 46%; height: 46%;
+    transform: translate(-50%, -50%);
+  }
+  .av.codex { background: linear-gradient(150deg, #d9d4cb 0%, #b6b0a6 60%, #8d877d 100%); }
+  .av.room  { background: linear-gradient(150deg, #7d8894 0%, #4e5761 60%, #2f353c 100%); }
+
+  /* ---------- Us / Day ----------
+     这不是一张统计卡,是一张关系卡:Day 35 独占视觉中心,四周留白给足。 */
+  /* ⚠️ 内边距**不给它开小灶**:所有白卡统一 var(--pad)。
+     卡与卡的区别靠字级和层级拉开,不靠各自改 padding —— 一开小灶,
+     整页的卡片语言就散了(而且这张卡会比参考图高出一截)。
+     这张卡的「留白感」由内部节奏给:Us → Day 之间 2px,Day → 副标题 14px。 */
+  .usrow { display: flex; align-items: center; gap: var(--sp-12); }
+  .usrow .grow { flex: 1; min-width: 0; }
+  .usrow .display { margin-top: 5.8px; }   /* 10-09 真机回算(~~4px~~) */
+  /* 10-09:这张卡的内边距参考图比别的卡大 —— 字距卡左 23.5pt、上 21.4、下 19.5 */
+  .relcard { padding: 21.4px 23.5px 19.5px; }   /* 参考:Us 底→Day 顶 17.2pt,我原来只有 10.4 */
+  /* ⚠️ 参考图实测(2026-09-19,**用最大连通域框出整个图形量的,不是靠固定裁剪**):
+     宽 29.7pt × 高 28.1pt = **宽高比 1.057**(几乎正方)、顶部凹口深 11.4%、色 #cecece。
+     ~~上一轮量成 1.511 是错的~~:那次的裁剪把心底的尖切掉了,高度少算三分之一,
+     照它改完心被压扁。**量形状一定要用连通域框住整个图形,别靠固定裁剪。** */
+  .heart {
+    width: 29.7px; height: 28.1px; flex: none;
+    color: var(--dim-2); opacity: .62; align-self: center;
+  }
+  .relcard .sub { margin-top: 4.7px; font-family: var(--serif-cn); }   /* 参考 Day 墨底→副标题墨顶只有 8.3pt(~~11px~~,我们是 15) */
+
+  /* ---------- 纪念日 ---------- */
+  /* 10-09:参考图标题块与环**上下居中**,环外圈顶距卡顶 18.5pt、右距卡边 17.3pt */
+  .annicard { padding: 18px 16.5px 18px 20px; }
+  .annihead { display: flex; align-items: center; gap: var(--sp-16); }
+  .annihead .grow { flex: 1; min-width: 0; }
+  .annihead .sub { margin-top: 6.2px; font-size: 15px; }   /* 10-09 真机回算(~~2px~~);Aug 同串墨宽比 1.03(~~14.5~~) */    /* 参考「标题+Aug21」整块 38.6pt,我原来 44.7 */
+  /* 10-09:参考环外径 69.5pt、弧宽 5.06(~~外径 64.5、弧宽 4.5~~)→ r 32.2、盒 71 */
+  .ring { width: 71px; height: 71px; flex: none; position: relative; }
+  .ring .num {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    font-family: var(--serif); font-size: var(--fs-ring); font-weight: 500;
+    letter-spacing: -.012em; line-height: 1;
+  }
+  /* 细到只是一道痕,不是 border */
+  /* 参考:Aug 21 底 → 生日行顶 53.5pt(含这条线),我原来 61.3 —— 这一带宽了 8pt */
+  .rule { height: var(--hair); background: var(--line); margin: 12.3px 0 15px; border: 0; }   /* 10-09 参考线距卡顶 101.3pt */
+  .annigrid { padding-right: 13px; }   /* 参考右列数字右缘距卡边 29.7pt,比环那一侧往里收 */
+  .annigrid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-12); }
+  .anni { display: flex; align-items: center; gap: var(--sp-12); }
+  /* ⚠️ 参考图实测这根竖条 **3.2pt** 宽,我原来 1.5px(量出来 1.3pt)—— 细了一半多 */
+  .anni .bar {
+    width: 3px; align-self: center; height: 39px; background: var(--ink);
+    opacity: .8; border-radius: 1.5px; flex: none;   /* 10-09:参考竖条高 ~39pt、与整行居中,不是撑满(~~stretch, min 38~~) */
+  }
+  .anni .grow { flex: 1; min-width: 0; }
+  /* 数字要跳出来,标签弱一级,日期再弱一级 */
+  /* 600,不是 700 —— 参考图里这两个数明显比 Day 35 轻一档 */
+  .anni .n {
+    font-family: var(--serif); font-size: var(--fs-metric-2); font-weight: 500;   /* 10-09:笔画/墨高 参考 15.6% vs 我们 600 的 18.6%(~~600~~) */
+    line-height: 1.1; letter-spacing: -.015em; flex: none; color: var(--ink-2);
+  }
+  /* 参考图:名字 #0c0c0c(近黑)、数字 #3f3f40(中灰)、日期最浅 */
+  /* ⚠️ 参考图把名字那一栏做得很窄(实测只有 **55.5pt**),于是排成
+     「敏敏's / birthday / Jan 6」**三行**;我原来那栏 99.3pt,排成两行 ——
+     整块的高度和节奏就跟着错了。限宽让它照样换行。
+     ⚠️ 这**不是**内容长度的问题:「敏敏's birthday」和「某某's birthday」一样长。 */
+  /* ⚠️ 10-09 更正:参考图那栏**能放下一整个 anniversary**(84pt),放不下「敏敏's birthday」(~105)。
+     ~~66px~~ 是在缩小了 9% 的图上量的,把 anniversary 也拆成了两行。 */
+  .anni .who { font-family: var(--serif); font-size: 15.25px; font-weight: 400; line-height: 1.24; color: var(--ink); overflow-wrap: anywhere; max-width: 90px; }   /* 字号:birthday 同串墨宽比 1.058(~~14.5~~) */
+  /* Jan 6 / Jun 22 在参考图里是**衬线**,不是黑体 */
+  /* 参考图的「Jan 6」是深灰、不是浅灰(颜色跨字体可比,所以这条可信) */
+  .anni .caption { font-family: var(--serif); font-size: 12.5px; color: var(--ink-2); margin-top: 1px; }
+
+  /* ---------- 数据小卡(Steps / Heart Rate) ----------
+     层级:大数字 primary → 标题 secondary → 单位/里程 tertiary。
+     图表极简:没有坐标轴、没有网格、没有第二种颜色。 */
+  .metric .top { display: flex; align-items: baseline; gap: var(--sp-8); }
+  .metric .top .grow { flex: 1; min-width: 0; }
+  .metric .top .datum { font-size: 12.5px; color: var(--dim); }
+  .metric { padding: 18px 20px 12.5px; }   /* 10-09 真机回算:参考标签更靠上、底边更紧 */
+  .metric .big {
+    font-family: var(--serif); font-size: var(--fs-metric); font-weight: 500;   /* 10-09:笔画/墨高 参考 17.0% vs 600 的 20.6%(~~600~~) */
+    line-height: 1.06; letter-spacing: -.02em;
+  }
+  /* bpm:参考图里它比想象中小得多(墨高实测 9.3pt vs 我原来 13.0)。
+     量下来约合 10px,取 12px —— 再小就不好认了,这 2px 是我留的,不是量出来的。 */
+  /* ⚠️ 10-09 更正:参考图的 bpm 是**衬线、中灰**,墨高 13.8pt(含 b 升部与 p 降部)。
+     ~~sans 12px 浅灰~~ —— 上一轮是在缩小 9% 的图上量的。 */
+  .metric .unit { font-size: 14.5px; color: var(--ink-2); font-family: var(--serif); font-weight: 400; }
+  .metric .figure { margin-top: 14px; }   /* 10-09(~~10px~~) */
+  .bars { display: flex; align-items: flex-end; gap: 3.6px; height: 31.5px; }   /* 10-09 参考柱区高 31.3pt(~~40~~) */
+  /* ⚠️ 柱子用 color-mix 掺墨色,不要 opacity + --dim-2:
+     深色皮肤下 --dim-2 本来就暗,再压 42% 透明度等于看不见(实测)。
+     掺墨的写法浅深两套底都自动成立。 */
+  /* ⚠️ 参考图实测:柱宽 17.1pt、间隙 3.6pt(宽:隙 = 4.7)、柱色 #8d8b8e。
+     我原来间隙 5pt、色掺墨 20%(约 #d3d3d3)—— 隙太宽、颜色太浅。 */
+  .bars i { flex: 1; background: color-mix(in srgb, var(--ink) 45%, transparent); border-radius: 2.5px; display: block; min-height: 3px; }
+  .bars i.on { background: var(--ink); }
+  .barlabels { display: flex; gap: 3.6px; margin-top: 5px; }
+  .barlabels span { flex: 1; text-align: center; font-size: 10px; line-height: 1.4; color: var(--dim-2); }
+  .barlabels span.on { color: var(--ink-2); font-weight: 600; }
+  .spark { width: 100%; height: 40px; display: block; }
+  .metric .foot { margin-top: 4px; font-size: 13.5px; color: var(--ink-2); font-family: var(--serif); }   /* 10-09:参考是衬线中灰(~~12px 黑体浅灰~~) */
+
+  /* ---------- 会话列表 ---------- */
+  .pagehead { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+  .pagehead .grow { flex: 1; min-width: 0; }
+  .list { padding: 0; overflow: hidden; }
+  .crow {
+    display: flex; align-items: center; gap: 14px;
+    min-height: var(--row); padding: 0 var(--pad); width: 100%; text-align: left;
+    position: relative;
+  }
+  .crow + .crow::before {
+    content: ""; position: absolute; left: calc(var(--pad) + var(--av) + 14px); right: 0; top: 0;
+    height: var(--hair); background: var(--line);
+  }
+  .crow .grow { flex: 1; min-width: 0; padding: 9px 0; }
+  .crow .prev {
+    font-size: 13.5px; color: var(--dim); margin-top: 1px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .crow .right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex: none; }
+  .crow .muted .name, .crow .muted { color: var(--dim); }
+
+  /* ---------- Chats:Telegram 式通栏列表(2026-10-09) ----------
+     数是从所有者同一台手机(402pt,3px/pt)的 Telegram 截图量的,单位 pt:
+       标题居中、中心 85.8;第一行顶 120.2;行高 60.3;头像 52、左 16、头像→文字 10;
+       名字墨顶距行顶 11.1、预览 27.5、时间 12.5;时间右距 17.3;
+       分隔线从文字左缘到右留 16,最后一行下面那条通栏。
+     字号按 SF 的大写高 .705em 反推:名字 14.3 半粗、预览 13.2、时间 12.8。
+     ⚠️ 只在 #tab-chats 里生效 —— .pagehead / .crow 那套 Diary 和别处还在用,别改共用规则。 */
+  .tgtitle {
+    margin: -3.2px 0 23.4px; text-align: center;
+    font-family: var(--sans); font-size: 17px; font-weight: 600; line-height: 22px; color: var(--ink);
+  }
+  .tglist { margin-inline: calc(-1 * var(--gutter)); position: relative; }
+  .tglist::after {   /* 最后一行下面那条:通栏 */
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--hair); background: var(--line);
+  }
+  #tab-chats .crow {
+    min-height: 60.3px; padding: 0 var(--gutter); gap: 10px; align-items: flex-start;
+  }
+  #tab-chats .crow .av { width: 52px; height: 52px; align-self: center; }
+  #tab-chats .crow + .crow::before { left: calc(var(--gutter) + 52px + 10px); right: 16px; }
+  #tab-chats .crow .grow { padding: 7.6px 0 0; }
+  #tab-chats .crow .name {
+    font-family: var(--sans); font-size: 14.3px; font-weight: 600; line-height: 17px; color: var(--ink);
+  }
+  #tab-chats .crow .prev {
+    font-family: var(--sans); font-size: 13.2px; line-height: 17px; margin-top: 0; color: var(--dim);
+  }
+  #tab-chats .crow .right { padding-top: 9.4px; padding-right: 1px; }
+  #tab-chats .crow .datum { font-family: var(--sans); font-size: 12.8px; line-height: 15.2px; color: var(--dim); }
+
+  /* ---------- 日记 ---------- */
+  .entry .when { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+  .entry .when .grow { flex: 1; min-width: 0; }
+  .entry .d { font-family: var(--serif); font-size: 22px; font-weight: 700; line-height: 1.1; }
+
+  /* ---------- 底部三栏 ----------
+     照原生 Tab Bar:毛玻璃 + 安全区,**没有硬边框、没有厚阴影**。
+     上沿那点分界靠一道极淡的渐变,不用 border —— border 一画就有「网页导航条」味。 */
+  .tabbar {
+    position: fixed; left: 50%; bottom: 0; transform: translateX(-50%);
+    width: 100%; max-width: 430px; z-index: 50;
+    height: calc(var(--tabbar-h) + var(--sab));
+    padding: 0 var(--gutter) var(--sab);
+    background: color-mix(in srgb, var(--paper-bot) 78%, transparent);
+    -webkit-backdrop-filter: saturate(1.5) blur(24px);
+    backdrop-filter: saturate(1.5) blur(24px);
+    display: flex; align-items: center;
+    padding-top: 7px;   /* 10-09:参考标签墨底距屏底 44.7pt,我们 49 —— 往下压 */
+  }
+  .tabbar::before {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 16px;
+    background: linear-gradient(to top, color-mix(in srgb, var(--paper-bot) 62%, transparent), transparent);
+    pointer-events: none;
+  }
+  .tabbar button {
+    flex: 1; text-align: center;
+    font-family: var(--serif); font-size: var(--fs-tab); font-weight: 400; line-height: 1.35;
+    color: var(--dim); padding: var(--sp-8) 0;
+    letter-spacing: -.008em;
+    transition: color .2s var(--ease-ui), transform .2s var(--ease-ui);
+  }
+  /* 600 不是 700:真机笔画 25.7% vs 参考 17.9%,粗了四成 */
+  .tabbar button[aria-selected="true"] { color: var(--ink); font-weight: 500; }   /* 10-09:参考笔画 15.4% vs 我们 600 的 23.6%(~~600~~) */
+  .tabbar button:active { transform: scale(.94); }
+
+
+  /* ---------- 首页「预览 7」(2026-10-10,所有者定)----------
+     底 / 卡 / 字全走皮肤 token;质感:卡片阴影大而淡、数字栏微微凹、底栏悬浮成玻璃胶囊。
+     字:问候、Day、纪念日这些大字照旧衬线;灰字说明用黑体。 */
+  .htop { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+  .htop .grow { flex: 1; min-width: 0; }
+  .hdate { margin-top: 5px; font-family: var(--sans); font-size: 15px; color: var(--dim); letter-spacing: -.005em; }
+  .htop .weather { margin-top: 3px; }
+  .hround { width: 48px; height: 48px; border-radius: 50%; flex: none; display: grid; place-items: center; color: var(--ink);
+    background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 10px 26px -8px rgba(0,0,0,.14); transition: transform .3s var(--ease-ui); }
+  .hround:active { transform: scale(.94); }
+  .homefeed .card { box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 14px 32px -10px rgba(0,0,0,.12); border-radius: 24px; }
+  .hstats { display: grid; grid-template-columns: repeat(3, 1fr); padding: 15px 0 14px; border-radius: 22px;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 5%, var(--card)), var(--card) 90%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.5), 0 0 0 .5px color-mix(in srgb, var(--ink) 7%, transparent); }
+  .hstats div { text-align: center; min-width: 0; }
+  .hstats div + div { border-left: 1px solid color-mix(in srgb, var(--ink) 7%, transparent); }
+  .hstats b { display: block; font-family: var(--serif); font-size: 28px; font-weight: 500; line-height: 32px; letter-spacing: -.01em; color: var(--ink); }
+  .hstats b.na { color: var(--dim-2); }
+  .hstats span { font-family: var(--sans); font-size: 12.5px; color: var(--dim); }
+  /* 悄悄话卡也换成和别的卡一样的白卡(2026-10-10 她:「黑色的也改成和其他卡片一样吧,不然好突兀」);
+     排版照旧(左头像、右正文、衬线小链接),靠正文字号稍大和位置当这一页的重点。~~深色底 var(--deep) + 重阴影~~ */
+  .homefeed .whisper { border-radius: 24px; background: var(--card); color: var(--ink);
+    box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 14px 32px -10px rgba(0,0,0,.12); }
+  .homefeed .whisper .more { color: var(--dim); }
+  /* ── 首页排版第二轮(2026-10-12 晚,她:「首页的排版不太好看」)── 只减不加,数是照现有字阶取的:
+     A 数字栏先藏(三格两格「未接上」,剩下那格和 Days 圆环里的数重复;等「下一次」「步数」接上再放出来 —— 标记和脚本都留着);
+     B 歌卡减一层:去掉卡里那颗重复的头像(Day 卡已有)、去掉歌那一行的灰底框(卡里套卡);落款挪到最上面当小标题,
+       「Today's Whisper ›」那个 › 点了没反应,去掉;有歌时写 Today's song;
+     D 天气那行全用黑体(原来数字衬线、汉字黑体同一行混着,和上面的日期也不是一套)。 */
+  .homefeed .hstats { display: none; }
+  .homefeed .whisper .av { display: none; }
+  .homefeed .whisper .txt { gap: 10px; }
+  .homefeed .whisper .more { order: -1; font-size: 13px; letter-spacing: .02em; }
+  .homefeed .wsong { background: none; padding: 2px 0 0; margin-top: 2px; border-radius: 0; }
+  .homefeed .wsong .cv { width: 44px; height: 44px; border-radius: 9px; }
+  .homefeed .wsong .pl { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+  /* 歌卡瘦身(2026-10-20,她:「卡片整体有点胖」→ 选 A「只收留白」):她截图量的现状 = 高 146pt,上下留白 23 / 20、小标题→正文 15、正文→歌那行 18、封面 44、圆角 24,
+     内容只有三行,一大半是空。改:上下留白 16、两处间距收到 8 / 12(.txt gap 是 10,行盒自带的空隙另算)、封面 40、圆角 20。样子不变,只是紧。
+     ⚠️ 没歌时(只有占位那句)同样收紧;撤回 = 删这一段。 */
+  .homefeed .whisper { padding-top: 16px; padding-bottom: 16px; border-radius: 20px; }
+  .homefeed .whisper .txt { gap: 6px; }
+  .homefeed .whisper .body { line-height: 1.42; }
+  .homefeed .wsong { margin-top: 4px; padding-top: 0; }
+  .homefeed .wsong .cv { width: 40px; height: 40px; border-radius: 8px; }
+  .weather { font-family: var(--sans); }
+  /* ── 经期(2026-10-12)── 一行 + 底下弹出的日历。全页零彩色照旧:来过 = 实心深色,预测 = 虚线圈 */
+  /* Days(2026-10-12,她「Days 特别割裂」):去掉「Days」标题(和上面的 Day 132 撞词、全页只有它单独一个标题)。
+     卡顶「Monthly Anniversary + 大圆环」那块**她要留着**(~~试过把它缩成列表里一行小圆环~~,她当场说「保留主体的那个」) */
+  .homefeed .hsec { display: none; }
+  .dli.dper { width: 100%; text-align: left; background: none; border-left: 0; border-right: 0; border-bottom: 0; font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .dli.dper[hidden] { display: none; }
+  .dli.dper:active { opacity: .6; }
+  .persheet { position: fixed; inset: 0; z-index: 95; }
+  .persheet[hidden] { display: none; }
+  .perback { position: absolute; inset: 0; background: rgba(0,0,0,.22); }
+  .perpanel { position: absolute; left: 0; right: 0; bottom: 0; max-width: 430px; margin: 0 auto; background: var(--card); color: var(--ink);
+              border-radius: 28px 28px 0 0; padding: 8px 20px calc(18px + var(--sab)); box-shadow: 0 -8px 30px rgba(0,0,0,.08); }
+  .pergrab { width: 36px; height: 5px; border-radius: 3px; margin: 0 auto 10px; background: color-mix(in srgb, var(--ink) 16%, transparent); }
+  .perhead { display: flex; align-items: center; justify-content: space-between; margin: 2px 0 10px; }
+  .permonth { font-family: var(--serif); font-size: 21px; font-weight: 500; letter-spacing: -.01em; }
+  .pernav { width: 36px; height: 36px; border-radius: 50%; font-size: 22px; line-height: 1; color: var(--ink-2); display: grid; place-items: center; }
+  .pernav:active { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+  .perwk, .pergrid { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; }
+  .perwk span { font-family: var(--sans); font-size: 12px; color: var(--dim); padding-bottom: 6px; }
+  .pergrid span { height: 42px; display: grid; place-items: center; }
+  .pergrid b { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font: 400 15px/1 var(--sans); color: var(--ink); }
+  .pergrid .out b { color: transparent; }
+  .pergrid .on b { background: var(--ink); color: var(--card); }
+  .pergrid .guess b { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ink) 45%, transparent); }
+  .pergrid .guess.dash b { box-shadow: none; outline: 1.5px dashed color-mix(in srgb, var(--ink) 45%, transparent); outline-offset: -1.5px; }
+  .pergrid .today b { font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
+  .perlegend { display: flex; gap: 16px; align-items: center; margin: 8px 2px 14px; font-family: var(--sans); font-size: 12.5px; color: var(--dim); }
+  .perlegend #perNote { margin-left: auto; }
+  .lg { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+  .lg.on { background: var(--ink); }
+  .lg.guess { outline: 1.2px dashed color-mix(in srgb, var(--ink) 55%, transparent); outline-offset: -1.2px; }
+  .perbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .perbtn { height: 50px; border-radius: 25px; font: 500 16px/1 var(--sans); background: var(--ink); color: var(--card); }
+  .perbtn.alt { background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink); }
+  .perbtn:active { transform: scale(.97); }
+  .perbtn[disabled] { opacity: .35; }
+  /* C(她 10-12 选的第二版):Day N 不要卡片框,直接当这一页最大的字,头像缩小放右边 */
+  .homefeed .huscard { background: none !important; box-shadow: none !important; -webkit-backdrop-filter: none; backdrop-filter: none;
+    flex-direction: row-reverse; justify-content: space-between; padding: 6px 2px 10px; }
+  .huscard .grow { display: flex; flex-direction: column; }
+  .huscard .hk { order: 3; margin-top: 1px; }
+  .huscard .hday { font-size: 54px; font-weight: 600; line-height: 1.02; letter-spacing: -.02em; margin-top: 0; }
+  .huscard .hsince { order: 2; margin-top: 6px; }
+  .hpair { width: 66px; height: 44px; align-self: center; }
+  .hav { width: 44px; height: 44px; box-shadow: 0 0 0 2.5px var(--paper-top); }
+  .hav + .hav { left: 22px; }
+  /* 每日一首(2026-10-12):一行「封面 + 歌名 / 歌手 + 播放」,底色只比卡片深一点(全页零彩色,封面是唯一的颜色) */
+  /* 2026-10-12 她:「音乐卡片太大了,高度缩小一点」—— 整行约 60 → 48:封面 44 → 36、上下留白 8 → 6、字和播放键各小一号 */
+  .wsong { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 9px 6px 6px; margin-top: 0; border-radius: 12px;
+           background: color-mix(in srgb, var(--ink) 4.5%, transparent); text-align: left; -webkit-tap-highlight-color: transparent;
+           transition: transform .2s var(--ease-ui, ease); }
+  .wsong[hidden] { display: none; }
+  .wsong:active { transform: scale(.98); }
+  .wsong .cv { width: 36px; height: 36px; border-radius: 7px; object-fit: cover; flex: none; background: color-mix(in srgb, var(--ink) 8%, transparent); }
+  .wsong .cv:not([src]), .wsong .cv[src=""] { visibility: hidden; }
+  .wsong .meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; line-height: 1.25; }
+  .wsong .meta b, .wsong .meta i { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-style: normal; }
+  .wsong .meta b { font-family: var(--sans); font-size: 14px; font-weight: 500; color: var(--ink); }
+  .wsong .meta i { font-family: var(--sans); font-size: 12px; color: var(--dim); }
+  .wsong .pl { width: 26px; height: 26px; border-radius: 50%; flex: none; display: grid; place-items: center; color: var(--ink);
+               background: color-mix(in srgb, var(--ink) 7%, transparent); padding-left: 2px; }
+  .huscard { display: flex; align-items: center; gap: 18px; padding: 18px 20px; }
+  .hpair { position: relative; width: 84px; height: 56px; flex: none; }
+  .hav { position: absolute; top: 0; width: 56px; height: 56px; box-shadow: 0 0 0 3px var(--card); }
+  .hav.him { left: 0; z-index: 1; background: linear-gradient(150deg,#6f6a63,#24211d); display: grid; place-items: center; }
+  .hav.him .bloom { width: 50%; height: 50%; }
+  .hav + .hav { left: 28px; }
+  .huscard .grow { flex: 1; min-width: 0; }
+  .hk { font-family: var(--sans); font-size: 13.5px; color: var(--dim); }
+  .hday { margin-top: 2px; font-family: var(--serif); font-size: 34px; line-height: 1.1; font-weight: 500; letter-spacing: -.01em; color: var(--ink); }
+  .hsince { margin-top: 2px; font-family: var(--serif); font-size: 13.5px; color: var(--dim); }
+  .hsec { margin: 14px 2px -2px; font-family: var(--serif); font-size: 21px; font-weight: 500; letter-spacing: -.01em; color: var(--ink); }
+  .dayscard { padding: 18px 18px 6px 20px; }
+  .dli { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: var(--hair) solid var(--line); }
+  .dayscard .annihead + .dli { margin-top: 14px; }
+  .dtile { width: 38px; height: 38px; border-radius: 11px; flex: none; display: grid; place-items: center;
+    background: color-mix(in srgb, var(--ink) 5%, transparent); color: var(--ink); }
+  .dtile svg { width: 19px; height: 19px; }
+  .dli .grow { flex: 1; min-width: 0; }
+  .dli .t { font-family: var(--sans); font-size: 15.5px; color: var(--ink); line-height: 1.3; }
+  .dli .s { margin-top: 1px; font-family: var(--serif); font-size: 13px; color: var(--ink-2); }
+  .dli .dn { font-family: var(--serif); font-size: 21px; font-weight: 500; color: var(--ink); white-space: nowrap; }
+  .dli .dn small { font-family: var(--sans); font-size: 12px; color: var(--dim); margin-left: 2px; font-weight: 400; }
+  /* 底栏:悬浮的玻璃胶囊(字照旧衬线)+ 右边一颗「+」 */
+  .tabbar {
+    left: var(--gutter); right: auto; transform: none; bottom: calc(10px + var(--sab));
+    width: auto; max-width: none; right: calc(var(--gutter) + 70px);
+    height: 60px; padding: 5px; border-radius: 30px;
+    background: color-mix(in srgb, var(--card) 72%, transparent);
+    box-shadow: inset 0 .5px 0 rgba(255,255,255,.6), 0 0 0 .5px color-mix(in srgb, var(--ink) 8%, transparent), 0 10px 30px rgba(0,0,0,.10);
+  }
+  .tabbar::before { display: none; }
+  .tabbar button { height: 50px; border-radius: 25px; padding: 0; }
+  .tabbar button[aria-selected="true"] { background: var(--card); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .tabplus { position: fixed; z-index: 50; right: var(--gutter); bottom: calc(10px + var(--sab)); width: 60px; height: 60px; border-radius: 50%;
+    display: grid; place-items: center; color: var(--ink);
+    background: color-mix(in srgb, var(--card) 72%, transparent); -webkit-backdrop-filter: saturate(1.5) blur(24px); backdrop-filter: saturate(1.5) blur(24px);
+    box-shadow: inset 0 .5px 0 rgba(255,255,255,.6), 0 0 0 .5px color-mix(in srgb, var(--ink) 8%, transparent), 0 10px 30px rgba(0,0,0,.10);
+    transition: transform .3s var(--ease-ui); }
+  .tabplus:active { transform: scale(.92); }
+  #tab-home .homefeed { padding-bottom: 28px; }   /* 底栏悬浮后,最后一张卡别贴着它 */
+  .tabbar[hidden] ~ .tabplus { display: none; }
+  /* 玻璃第四版(2026-10-12,照 iOS 原生;量法与理由见 chat.html TG 样式末尾《玻璃第四版》):本体只亮一点,立体感靠上下两道亮边 + 下沿一道影。
+     ~~底 = card 72% + 上沿 .5px 高光 + 一团 30px 的影~~ —— 浅底上就是一张白卡片。深色皮肤(雾山 / 象牙夜间)白光按 --g4-w 收到两成。 */
+  :root { --g4-w: 1; }
+  :root[data-skin="fogmtn"] { --g4-w: .22; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]):not([data-skin]), :root:not([data-theme="light"])[data-skin="ivory"] { --g4-w: .22; }
+  }
+  /* 2026-10-12 晚 玻璃第五版:照 iOS 键盘工具栏逐段重配(量法与理由见 chat.html TG 样式末尾《玻璃第五版》);撤掉下面那团影,只留细边 */
+  /* 玻璃第五版的配方抽成公共的两个变量(2026-10-12 晚,她:「我想要所有玻璃的地方都是这个质感」)。
+     量法见 chat.html TG 样式末尾《玻璃第五版》;深色皮肤白光按 --g4-w 收到两成。**以后调玻璃只动这两个变量**。 */
+  :root {
+    --g5-bg: linear-gradient(to top, rgb(255 255 255 / calc(.9 * var(--g4-w))) 0, rgb(255 255 255 / calc(.62 * var(--g4-w))) 1px,
+                             rgb(255 255 255 / calc(.37 * var(--g4-w))) 2px, rgb(255 255 255 / calc(.17 * var(--g4-w))) 3px, transparent 5px),
+             linear-gradient(to bottom, rgb(255 255 255 / calc(.86 * var(--g4-w))) 0, rgb(255 255 255 / calc(.67 * var(--g4-w))) 1.5px,
+                             rgb(255 255 255 / calc(.55 * var(--g4-w))) 3px, rgb(255 255 255 / calc(.43 * var(--g4-w))) 5px,
+                             rgb(255 255 255 / calc(.3 * var(--g4-w))) 7px, rgb(255 255 255 / calc(.2 * var(--g4-w))) 10px,
+                             rgb(255 255 255 / calc(.21 * var(--g4-w))) 15px, rgb(255 255 255 / calc(.36 * var(--g4-w))) 20px,
+                             rgb(255 255 255 / calc(.45 * var(--g4-w))) 25px, rgb(255 255 255 / calc(.48 * var(--g4-w))) 30px, rgb(255 255 255 / calc(.48 * var(--g4-w))) 100%);
+    --g5-sh: inset 0 1px 0 rgb(255 255 255 / calc(.2 + .75 * var(--g4-w))), inset 0 -.5px 0 rgb(255 255 255 / calc(.7 * var(--g4-w))),
+             0 0 0 .5px rgb(0 0 0 / .07), 0 .5px .5px rgb(0 0 0 / .04);
+  }
+  /* 深色单独一套(2026-10-20,她暗色截图:「这个玻璃为啥在暗色模式下像不锈钢啊」):
+     上面那套是照**浅色** iOS 键盘工具栏量的「上沿亮 → 往下约 16px 一条暗带 → 再亮回来」,深色只按 --g4-w 收暗 ——
+     她截图量出来卡片 63 → 38 → 52、底栏 78 → 56 → 65 → 54 → 88,深底上这种「亮暗亮」的竖向光带就是金属管 / 拉丝钢的反光。
+     iOS 深色玻璃(10-20 她 iMessage 深色截图量的)是:本体平的一块 rgba(58,58,60,.52)(纯黑上 31),只有上下沿各一道细亮边,上沿那点光 10px 内就淡掉,**中间没有暗带**。
+     判深色的条件和上面 --g4-w 那两条一样(雾山 / 系统深色下的象牙)。 */
+  :root { --g5-base: color-mix(in srgb, var(--card) 22%, transparent); }
+  :root[data-skin="fogmtn"] {
+    --g5-bg: linear-gradient(to bottom, rgb(255 255 255 / .08) 0, rgb(255 255 255 / .03) 4px, transparent 10px),
+             linear-gradient(to top, rgb(255 255 255 / .05) 0, transparent 8px);
+    --g5-sh: inset 0 1px 0 rgb(255 255 255 / .22), inset 0 -.5px 0 rgb(255 255 255 / .12), inset 0 0 0 .5px rgb(255 255 255 / .04), 0 0 0 .5px rgb(0 0 0 / .4);
+    --g5-base: rgb(58 58 60 / .52);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]):not([data-skin]), :root:not([data-theme="light"])[data-skin="ivory"] {
+      --g5-bg: linear-gradient(to bottom, rgb(255 255 255 / .08) 0, rgb(255 255 255 / .03) 4px, transparent 10px),
+               linear-gradient(to top, rgb(255 255 255 / .05) 0, transparent 8px);
+      --g5-sh: inset 0 1px 0 rgb(255 255 255 / .22), inset 0 -.5px 0 rgb(255 255 255 / .12), inset 0 0 0 .5px rgb(255 255 255 / .04), 0 0 0 .5px rgb(0 0 0 / .4);
+      --g5-base: rgb(58 58 60 / .52);
+    }
+  }
+  /* 底栏、「+」、设置那颗圆钮、首页的卡(今天的歌 / 纪念日)都用它;卡片下面原来那团 14~32px 的影(卡片感)一并撤掉 */
+  .tabbar, .tabplus, .hround, .homefeed .card, .homefeed .whisper {
+    background: var(--g5-bg), var(--g5-base);
+    -webkit-backdrop-filter: blur(14px) saturate(1.6); backdrop-filter: blur(14px) saturate(1.6);
+    box-shadow: var(--g5-sh);
+  }
+  .homefeed .huscard { background: none !important; box-shadow: none !important; }   /* Day N 那块本来就不要框(第二版) */
+  /* 经期日历那块面板:是要读的面板,底保持实一点,只换上同一套边光、撤掉那团影 */
+  .perpanel { background: var(--g5-bg), color-mix(in srgb, var(--card) 86%, transparent);
+              -webkit-backdrop-filter: blur(20px) saturate(1.5); backdrop-filter: blur(20px) saturate(1.5); box-shadow: var(--g5-sh); }
+  .tabbar button[aria-selected="true"] { background: color-mix(in srgb, var(--ink) 6%, transparent); box-shadow: none; }   /* iOS 26:选中那格是一颗淡灰胶囊,不是白卡 */
+  /* ---------- 入场:Spring Reveal ----------
+     一次整体的落位,不是「每张卡各跳各的」:轻微 stagger(45ms 一级),
+     **只动 opacity / transform**,绝不动 height —— 动高度必然抖版。
+     ⚠️ 初始隐藏写在 keyframe 里靠 animation-fill-mode: both 生效,
+     所以 JS 没跑 / 浏览器不认动画时,内容照常显示,不会白屏。 */
+  html.anim .reveal {
+    animation: reveal var(--dur-reveal) var(--spring) both;
+    animation-delay: calc(var(--i, 0) * var(--stagger));
+    will-change: transform, opacity;
+  }
+  @keyframes reveal {
+    from { opacity: 0; transform: translate3d(0, 14px, 0) scale(.972); }
+    to   { opacity: 1; transform: none; }
+  }
+  /* 系统开了「减弱动态效果」:去掉位移、缩放和错位,只留一点点淡入 */
+  @media (prefers-reduced-motion: reduce) {
+    html.anim .reveal {
+      animation: fadein .22s linear both;
+      animation-delay: 0ms;
+    }
+    @keyframes fadein { from { opacity: 0 } to { opacity: 1 } }
+  }
+
+  /* ---------- 点开一条会话:把原来那整页聊天推进来 ----------
+     ⚠️ **用 iframe 装的,聊天页一个字节都没改** —— 所有者 2026-09-19 的要求:
+     「chat 目前的 ui 不变,点进去做聊天页」。那页里有 43 处「照官端」是她一处处对齐的,
+     嵌进来改 CSS 迟早会碰坏,所以整页原样装进来。
+     ~~代价:它自带一条顶栏,所以上面这条返回条是**第二条**。~~
+     ✅ 2026-10-09 所有者报「点进去分三层」并点头合成一条:
+       ① 返回键不再是外壳自己的一条栏,而是**放进聊天页顶栏左边那颗玻璃圆**(#menuBtn)——
+          官端本来就是「左一颗圆、右一颗胶囊」,左边那颗 09-19 拆侧边栏时空了出来,
+          它的玻璃样式(含深色)还原样留在 chat.html 里,所以这里只放回按钮本身,
+          **chat.html 文件一个字节不改**(见下面脚本里的 mountBack);
+       ② 安全区那一截的底色跟着聊天页的底色走(原来是首页的纸色,和聊天页差一档)。
+     外壳那条 .chatbar 只在「这间屋还没部署」时出现(那时没有聊天页可放按钮)。 */
+  .chatview {
+    position: fixed; inset: 0; z-index: 80;
+    background: var(--paper-bot);
+    display: flex; flex-direction: column;
+    /* ~~padding-top: var(--sat)~~ 2026-10-10 撤:那一截就是所有者截图里「顶部分层」的那条纯色带。
+       现在 iframe 铺满整屏,安全区由聊天页自己让(外壳量好递进去,见 chat.html 开头和下面的 pushSafe);
+       只有「这间屋还没部署」那条 .chatbar 自己让出顶部安全区。 */
+    /* ~~animation: slidein .28s~~(只右移 16px + 淡入,像网页弹窗)2026-10-10 第三轮改成 iOS 的推入:
+       整页从右边推进来、下面那页往左让 30% 并压暗一点,返回反过来;左边缘还能拖着返回。由下面脚本 pushTo() 驱动。 */
+  }
+  .chatview.pushing { box-shadow: -10px 0 28px rgba(0,0,0,.14); }
+  #pushdim { position: fixed; inset: 0; z-index: 79; background: #000; opacity: 0; pointer-events: none; }
+  #pushdim[hidden] { display: none !important; }
+  @keyframes slidein { from { transform: translateX(16px); opacity: 0 } to { transform: none; opacity: 1 } }
+  @media (prefers-reduced-motion: reduce) { .chatview { animation: none } }
+  .chatbar {
+    display: flex; align-items: center; gap: 10px;
+    height: calc(44px + var(--sat)); flex: none; padding: var(--sat) var(--gutter) 0;
+    border-bottom: var(--hair) solid var(--line);
+    background: color-mix(in srgb, var(--paper-top) 88%, transparent);
+    -webkit-backdrop-filter: saturate(1.4) blur(20px);
+    backdrop-filter: saturate(1.4) blur(20px);
+  }
+  .chatbar .back { display: inline-flex; align-items: center; gap: 4px; font-size: 16px; color: var(--ink); }
+  .chatbar .back svg { width: 9px; height: 15px; }
+  .chatbar .who { flex: 1; text-align: center; font-family: var(--serif); font-size: 16px; font-weight: 600; }
+  .chatbar .rail { width: 56px; flex: none; }
+  .chatview iframe { flex: 1; width: 100%; border: 0; display: block; background: var(--paper-bot); }
+  .chatview .nothere {
+    flex: 1; display: grid; place-items: center; padding: 0 32px; text-align: center;
+    font-size: 15px; color: var(--dim); line-height: 1.7;
+  }
+  .crow { cursor: pointer; }
+  .crow:active { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+
+  /* ---------- 设置 ---------- */
+  .sheet {
+    position: fixed; inset: 0; z-index: 90;
+    /* 底色用 --paper-top(~~--paper-bot~~,2026-10-10):iOS 26 拿这块的**底色**去涂状态栏那截,
+       而这页顶上看到的是渐变起点 --paper-top;底色是 bot 就会差一档、成了「分层」。渐变照旧盖在上面,样子不变。 */
+    background: var(--paper-top);
+    background-image: linear-gradient(180deg, var(--paper-top) 0%, var(--paper-bot) 62%);
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+    padding-top: var(--sat);
+    animation: rise .26s cubic-bezier(.32,.72,0,1);
+  }
+  @keyframes rise { from { transform: translateY(18px); opacity: 0 } to { transform: none; opacity: 1 } }
+  @media (prefers-reduced-motion: reduce) { .sheet { animation: none } .tabbar button { transition: none } }
+  .sheethead { display: flex; align-items: baseline; gap: 12px; padding: 22px 0 18px; }
+  .sheethead .grow { flex: 1; min-width: 0; }
+  .sheethead .done { font-size: 16px; color: var(--ink); }
+  .group { padding: var(--pad); }
+  .group > .seclabel { font-size: 15px; color: var(--ink); margin-bottom: 14px; }
+  .group .hint { font-size: 13px; color: var(--dim); margin-top: 10px; line-height: 1.5; }
+  .grouprule { height: var(--hair); background: var(--line); margin: 16px calc(var(--pad) * -1); border: 0; }
+
+  .skins { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px 10px; }
+  .skin { display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  .swatch {
+    width: 58px; height: 58px; border-radius: 50%;
+    display: grid; place-items: center;
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--ink) 16%, transparent);
+    transition: box-shadow .18s ease;
+  }
+  .skin[aria-pressed="true"] .swatch { box-shadow: inset 0 0 0 2px var(--ink); }
+  .swatch .tick { width: 18px; height: 18px; color: var(--ink); opacity: 0; transition: opacity .15s ease; }
+  .skin[aria-pressed="true"] .swatch .tick { opacity: 1; }
+  .skin .nm { font-size: 12px; color: var(--dim); text-align: center; }
+
+  .srow { display: flex; align-items: center; gap: 14px; }
+  .srow .grow { flex: 1; min-width: 0; }
+  .srow .t { font-size: 15px; }
+  .srow .s { font-size: 13px; color: var(--dim); margin-top: 2px; line-height: 1.45; }
+  .well {
+    width: 32px; height: 32px; border-radius: 50%; flex: none;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 10%, transparent);
+    background:
+      radial-gradient(circle at 50% 50%, var(--wellc) 0 54%, transparent 55%),
+      conic-gradient(from .25turn, #e26a55, #e0b354, #8fb27f, #6fa8c4, #9089cb, #cf7fa5, #e26a55);
+  }
+  .slider { margin-top: 14px; }
+  input[type="range"] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 30px;
+    background: transparent; display: block; margin: 0;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 5px; border-radius: 3px;
+    background: linear-gradient(to right, var(--ink) 0 var(--fill, 85%), color-mix(in srgb, var(--ink) 12%, transparent) var(--fill, 85%) 100%);
+  }
+  input[type="range"]::-moz-range-track {
+    height: 5px; border-radius: 3px;
+    background: linear-gradient(to right, var(--ink) 0 var(--fill, 85%), color-mix(in srgb, var(--ink) 12%, transparent) var(--fill, 85%) 100%);
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 30px; height: 30px; border-radius: 15px; margin-top: -12.5px;
+    background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.14), 0 4px 10px rgba(0,0,0,.14);
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 30px; height: 30px; border: 0; border-radius: 15px;
+    background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.14), 0 4px 10px rgba(0,0,0,.14);
+  }
+
+  /* 聊天外观(2026-10-09):气泡色块一排 + 自定义 + 壁纸缩略图 */
+  .dots { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+  .dot { width: 30px; height: 30px; border-radius: 50%; position: relative; flex: none;
+         box-shadow: inset 0 0 0 .5px rgba(0,0,0,.14); transition: transform .15s ease; }
+  .dot:active { transform: scale(.9); }
+  .dot[aria-pressed="true"]::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; box-shadow: 0 0 0 2px var(--ink); }
+  .dot.def { background: conic-gradient(from 210deg, var(--card), var(--ink) 50%, var(--card)); }
+  .dot.custom { background: conic-gradient(#e8b4a8, #e6d7a3, #b5d1b3, #a8c6d9, #c3b0d6, #e8b4a8); overflow: hidden; }
+  .dot.custom input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; border: 0; padding: 0; }
+  .wallthumb { width: 46px; height: 64px; border-radius: 10px; flex: none; background: var(--paper-bot) center / cover no-repeat;
+               box-shadow: inset 0 0 0 .5px rgba(0,0,0,.14); }
+  .seg { display: flex; gap: 8px; margin-top: 4px; }
+  .nameinput { flex: 0 1 50%; min-width: 0; text-align: right; border: 0; background: none; padding: 6px 0;
+    font: inherit; font-size: 16px; color: var(--ink); outline: none; }   /* 16px:iOS 低于 16 会在聚焦时自动放大页面 */
+  .nameinput::placeholder { color: var(--dim); }
+  .seg button {
+    flex: 1; height: 46px; border-radius: 20px;
+    font-size: 15px; color: var(--dim);
+    transition: background .18s ease, color .18s ease;
+  }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: var(--card); }
+  @media (prefers-reduced-motion: reduce) { .seg button, .swatch, .swatch .tick { transition: none } }
+  /* ---------- 设置页:iOS 分组列表(2026-10-10,所有者「这个界面能用 TG 的 UI 设计优化一下吗」)----------
+     照 iOS「设置」/ Telegram iOS 设置页的骨架,数是 iOS 的系统值(pt):
+       组标题在卡片外上方 13 灰、左缩 16;说明在卡片下方 13 灰当脚注;行 ≥44、左右 16、正文 17;
+       分隔线半像素、从文字处起(左缩 16,有头像的行缩到头像后面);组间 35。
+       分段按钮 = UISegmentedControl:灰槽(系统 fill 12%)高 32、圆角 9,白滑块圆角 7 + 细投影,字 13 中粗,滑块会滑。
+     **只管样式**:颜色照旧跟皮肤走(不加 TG 的彩色图标 —— 她定过「整页零彩色」);全页字体换 SF(系统字),
+     大标题也是 SF 粗体 34(~~衬线 Settings~~,首页那套衬线是照参考图的,设置页照 iOS)。
+     作用范围 = #settings 里那个 .stack.ios,首页 / Diary 的 .card .srow .seg 一个没动。 */
+  #settings { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", sans-serif; }
+  #settings .sheethead { align-items: center; padding: 10px 4px 8px; }
+  #settings .sheethead .title { font-family: inherit; font-size: 34px; font-weight: 700; letter-spacing: .01em; line-height: 41px; }
+  #settings .sheethead .done { font-size: 17px; font-weight: 600; padding: 8px 2px 8px 12px; }
+  #settings .sheethead .done:active { opacity: .45; }
+  .stack.ios { gap: 0; }
+  .stack.ios .ghead { margin: 26px 16px 7px; font-size: 13px; font-weight: 400; line-height: 18px; color: var(--dim); letter-spacing: .01em; }
+  .stack.ios .ghead:first-child { margin-top: 10px; }
+  .stack.ios > .hint { margin: 7px 16px 0; font-size: 13px; line-height: 18px; color: var(--dim); }
+  .stack.ios .group { padding: 0; overflow: hidden; }
+  /* 一格:没有分隔线以外的装饰,分隔线从左边 16 起(iOS 的 separatorInset) */
+  .stack.ios .group > .srow, .stack.ios .group > .gcell { position: relative; padding: 11px 16px; min-height: 44px; }
+  .stack.ios .group > .gcell { padding-top: 13px; padding-bottom: 13px; }
+  .stack.ios .group > * + .srow::before, .stack.ios .group > * + .gcell::before {
+    content: ""; position: absolute; top: 0; left: 16px; right: 0; height: var(--hair); background: var(--line); }
+  .stack.ios .group > * + .srow:has(> .av)::before { left: 66px; }   /* 头像行之间缩到名字下面;头像行下面那行照常从 16 起 */
+  .stack.ios .srow.flat { padding: 0; min-height: 0; }
+  .stack.ios .srow { gap: 12px; }
+  .stack.ios .t, .stack.ios .srow .t { font-size: 17px; line-height: 22px; letter-spacing: -.01em; }
+  .stack.ios .gcell > .t { margin-bottom: 10px; }
+  .stack.ios .srow .s { font-size: 13px; line-height: 18px; margin-top: 1px; }
+  .stack.ios .group:active { }
+  .stack.ios .datum { font-family: inherit; font-size: 15px; color: var(--dim); padding: 6px 0; }
+  .stack.ios .datum.act { color: var(--ink); font-weight: 500; }
+  .stack.ios .datum:active { opacity: .45; }
+  .stack.ios .nameinput { font-size: 17px; color: var(--dim); }
+  .stack.ios .nameinput:focus { color: var(--ink); }
+  .stack.ios .skins { gap: 14px 8px; }
+  .stack.ios .swatch { width: 54px; height: 54px; }
+  .stack.ios .skin .nm { font-size: 12px; }
+  .stack.ios .slider { margin-top: 8px; }
+  .stack.ios input[type="range"]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; }
+  .stack.ios input[type="range"]::-webkit-slider-thumb { width: 28px; height: 28px; border-radius: 14px; margin-top: -12px;
+    box-shadow: 0 .5px 4px rgba(0,0,0,.12), 0 6px 13px rgba(0,0,0,.12), 0 0 0 .5px rgba(0,0,0,.04); }
+  .stack.ios .dots { margin-top: 0; gap: 12px; }
+
+  /* UISegmentedControl:槽 + 一块会滑的白滑块(.segthumb,脚本放进去、按选中那颗算位置) */
+  .stack.ios .seg { position: relative; display: flex; gap: 0; margin: 0; padding: 2px; height: 32px; border-radius: 9px;
+    background: color-mix(in srgb, var(--ink) 9%, transparent); isolation: isolate; }
+  .stack.ios .seg button { position: relative; z-index: 1; flex: 1; height: 28px; border-radius: 7px; background: none !important;
+    font-size: 13px; font-weight: 500; color: var(--ink); letter-spacing: -.005em; transition: opacity .2s ease; }
+  .stack.ios .seg button[aria-pressed="true"] { font-weight: 600; color: var(--ink); }
+  .stack.ios .seg button:active { opacity: .5; }
+  /* 相邻两颗都没选中时中间一道细竖线(iOS 有);选中那颗两边的不画 */
+  .stack.ios .seg button + button::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 1px;
+    background: color-mix(in srgb, var(--ink) 14%, transparent); transition: opacity .2s ease; }
+  .stack.ios .seg button[aria-pressed="true"]::before, .stack.ios .seg button[aria-pressed="true"] + button::before { opacity: 0; }
+  .stack.ios .segthumb { position: absolute; z-index: 0; top: 2px; left: 2px; height: 28px; border-radius: 7px; pointer-events: none;
+    background: var(--card); box-shadow: 0 3px 8px rgba(0,0,0,.12), 0 3px 1px rgba(0,0,0,.04), 0 0 0 .5px rgba(0,0,0,.04);
+    transition: transform .42s var(--spring-ui, cubic-bezier(.32,.72,0,1)), width .42s var(--spring-ui, cubic-bezier(.32,.72,0,1)); }
+  .stack.ios .seg:not([data-on]) .segthumb { opacity: 0; }
+  .stack.ios .seg.dk .segthumb { background: color-mix(in srgb, var(--ink) 30%, var(--card)); box-shadow: 0 3px 8px rgba(0,0,0,.25); }
+  @supports (transition-timing-function: linear(0, 1)) {
+    :root { --spring-ui: linear(0, 0.0671, 0.2058, 0.3592, 0.5008, 0.6207, 0.7171, 0.792, 0.8488, 0.8911, 0.9222, 0.9447, 0.961, 0.9726, 0.9808, 0.9866, 0.9907, 0.9936, 0.9956, 0.9969, 0.9979, 0.9986, 1); }
+  }
+  @media (prefers-reduced-motion: reduce) { .stack.ios .segthumb { transition: none; } }
+
+  /* 「设计参数」那一行:平时收起(她 10-10「藏起来,别像毛坯房」),右边灰字 + ›,展开时 › 转 90° */
+  .stack.ios .srow.disc { width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  .stack.ios .srow.disc:active { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+  .stack.ios .srow.disc .dval { font-size: 15px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 48%; }
+  .stack.ios .srow.disc .chev { flex: none; color: color-mix(in srgb, var(--ink) 30%, transparent); transition: transform .42s var(--spring-ui, cubic-bezier(.32,.72,0,1)); }
+  .stack.ios .srow.disc[aria-expanded="true"] .chev { transform: rotate(90deg); }
+  .stack.ios .specbody:not([hidden]) { animation: specin .36s var(--spring-ui, cubic-bezier(.32,.72,0,1)); }
+  @keyframes specin { from { opacity: 0; transform: translate3d(0, -6px, 0); } }
+  @media (prefers-reduced-motion: reduce) { .stack.ios .specbody { animation: none !important; } .stack.ios .srow.disc .chev { transition: none; } }
+
+  /* 打开 / 关闭:iOS 模态那样从底下整页推上来、点「完成」滑下去(同聊天页那条弹簧);脚本驱动 */
+  #settings.ios-in { animation: none; }
+
+  /* ══ 设置页两层(2026-10-19 深夜,她:「东西都是摊开的,字体和 UI 太大了也不美观」)══
+     第一层 = 一行一行的列表 + 右边灰字当前值 + ›;点进去 = 原来那组控件(.spage)。整体缩一号:
+     大标题 ~~SF 粗体 34~~ → 首页那套衬线 30(她定的);行字 ~~17~~ → 15.5;组标题照首页的 UPCOMING(衬线小号大写、字距拉开);
+     皮肤圆点 ~~54~~ → 40、一排 5~6 个;每行左边一枚细线图标(不上彩色底,整页零彩色照旧)。 */
+  #settings .sheethead { min-height: 52px; position: relative; }
+  #settings .sheethead .title { font-family: var(--serif); font-size: 30px; font-weight: 600; letter-spacing: -.005em; line-height: 36px; }
+  #settings .sheethead .done { font-size: 16px; }
+  #settings .sback { display: inline-flex; align-items: center; gap: 5px; margin-left: -2px; padding: 8px 8px 8px 0;
+    font: 400 16px/1 var(--en); color: var(--ink); background: none; border: 0; cursor: pointer; }
+  #settings .sback:active { opacity: .45; }
+  #settings .sback svg { width: 10px; height: 17px; }
+  #settings .sback[hidden], #settings .stitle[hidden] { display: none; }
+  #settings .stitle { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin: 0; max-width: 55%;
+    font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #settings[data-sp]:not([data-sp="root"]) .sheethead .title { visibility: hidden; width: 0; flex: 1; }
+  .stack.ios .spage[hidden] { display: none; }
+  .stack.ios .ghead { margin: 24px 16px 8px; font-family: var(--en); font-size: 11.5px; font-weight: 500; letter-spacing: .1em;
+    text-transform: uppercase; line-height: 16px; }
+  .stack.ios .spage > .card:first-child, .stack.ios .spage > .fprev:first-child { margin-top: 10px; }
+  .stack.ios .spage > .hint { margin: 8px 16px 0; font-size: 12.5px; line-height: 17px; color: var(--dim); }
+  .stack.ios .t, .stack.ios .srow .t { font-size: 15.5px; line-height: 21px; letter-spacing: 0; }
+  .stack.ios .srow .s { font-size: 12.5px; line-height: 17px; }
+  .stack.ios .group > .srow, .stack.ios .group > .gcell { padding: 10px 16px; min-height: 46px; }
+  .stack.ios .datum { font-size: 14.5px; }
+  .stack.ios .nameinput { font-size: 15.5px; }
+  .stack.ios .gcell > .t { margin-bottom: 9px; }
+  /* 第一层那几行 */
+  .stack.ios .srow.nav { width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: 0; cursor: pointer; gap: 12px; }
+  .stack.ios .srow.nav:active { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+  .stack.ios .srow.nav .sic { flex: none; width: 21px; height: 21px; color: var(--ink-2); }
+  .stack.ios .group > * + .srow.nav:not(.sprof)::before { left: 49px; }      /* 分隔线从字那里起,图标下面不画(iOS) */
+  .stack.ios .srow.nav .dval { font-size: 14.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 50%; display: inline-flex; align-items: center; gap: 6px; }
+  .stack.ios .srow.nav .dval .sdot { width: 12px; height: 12px; border-radius: 50%; box-shadow: 0 0 0 .5px color-mix(in srgb, var(--ink) 18%, transparent); }
+  .stack.ios .srow.nav .chev { flex: none; color: color-mix(in srgb, var(--ink) 28%, transparent); }
+  .stack.ios .sprof { padding-top: 12px !important; padding-bottom: 12px !important; }
+  .stack.ios .spair { position: relative; width: 62px; height: 42px; flex: none; }
+  .stack.ios .spair .hav { position: absolute; top: 0; width: 42px; height: 42px; box-shadow: 0 0 0 2px var(--card); }
+  .stack.ios .spair .hav + .hav { left: 20px; }
+  .stack.ios .sprof .pn { display: block; font-family: var(--en); font-size: 17px; font-weight: 500; }
+  .stack.ios .sprof .s { display: block; margin-top: 1px; color: var(--dim); }
+  /* 皮肤:圆点缩小、一排排开 */
+  .stack.ios .skins { grid-template-columns: repeat(6, 1fr); gap: 12px 2px; padding: 4px 0; }
+  .stack.ios .swatch { width: 40px; height: 40px; }
+  .stack.ios .swatch .tick { transform: scale(.8); }
+  .stack.ios .skin { gap: 6px; }
+  .stack.ios .skin .nm { font-size: 11px; }
+  /* 选中那颗:外圈一道环(原来是圈里一道内描边 + 勾,深色模式下白圆点上看不见);勾照旧在 */
+  .stack.ios .skin[aria-pressed="true"] .swatch { box-shadow: 0 0 0 2px var(--card), 0 0 0 3.5px var(--ink); }
+  /* 单选:二级页里排成 iOS 勾选列表(盯的还是 aria-pressed,点选逻辑没动;那块白滑块在这里不用) */
+  .stack.ios .seg.list { display: block; height: auto; padding: 0; border-radius: 0; background: none; }
+  .stack.ios .seg.list .segthumb { display: none; }
+  .stack.ios .seg.list button { position: relative; display: flex; align-items: center; justify-content: space-between; width: 100%;
+    height: auto; min-height: 46px; padding: 10px 16px; border-radius: 0; text-align: left;
+    font-size: 15.5px; font-weight: 400 !important; color: var(--ink); }
+  .stack.ios .seg.list button:active { opacity: 1; background: color-mix(in srgb, var(--ink) 5%, transparent) !important; }
+  .stack.ios .seg.list button + button::before { left: 16px; right: 0; top: 0; bottom: auto; width: auto; height: var(--hair);
+    background: var(--line); opacity: 1 !important; }
+  .stack.ios .seg.list button[aria-pressed="true"]::after { content: ""; flex: none; width: 15px; height: 12px; background: var(--ink);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 12' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.5 6.5 5.5 10.5 13.5 1.5'/%3E%3C/svg%3E") center / contain no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 12' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.5 6.5 5.5 10.5 13.5 1.5'/%3E%3C/svg%3E") center / contain no-repeat; }
+  /* 字号页顶上那颗预览泡:跟着选中的档变 */
+  .stack.ios .fprev { display: flex; justify-content: flex-end; padding: 18px 16px 14px; }
+  .stack.ios .fprev span { padding: 6.5px 12px; border-radius: 16px 16px 6px 16px; background: var(--ink); color: var(--card);
+    font-size: var(--fp, 14.5px); line-height: 1.36; transition: font-size .2s ease; }
+  /* 进二级页 / 回来:iOS 推入那样横着滑一小段 + 淡入(只动 transform / opacity) */
+  @keyframes spin-fwd { from { opacity: 0; transform: translate3d(26px, 0, 0); } }
+  @keyframes spin-back { from { opacity: 0; transform: translate3d(-26px, 0, 0); } }
+  .stack.ios .spage.fwd { animation: spin-fwd .38s var(--spring-ui, cubic-bezier(.32,.72,0,1)); }
+  .stack.ios .spage.back { animation: spin-back .38s var(--spring-ui, cubic-bezier(.32,.72,0,1)); }
+  @media (prefers-reduced-motion: reduce) { .stack.ios .spage.fwd, .stack.ios .spage.back { animation: none; } }
+
+  /* ══ 同夜第二版:照 iPhone 原生「设置」(iOS 26)══ 她看完第一版:「ui 你按 iPhone 原生 ui 优化一下」。照系统那几样换:
+     ① 每行图标 = 30pt 圆角方块(圆角 7)+ 白色符号 —— 系统是彩色方块,我们**用深浅不同的灰**(整页零彩色照旧);分隔线从字那里起(16+30+12=58);
+     ② 行高 52、字 17 / 值 17 灰(iOS 26 的数;~~15.5 / 46~~ 第一版缩过头,她要原生);组标题回到中文小灰字、不大写(系统的样子);
+     ③ 顶上那排:返回 / 完成 = iOS 26 的玻璃圆钮(44pt,返回是 ‹、完成是 ✓ 实心深色),二级页标题居中 17 粗;
+     ④ 头像那行照「Apple 账户」:头像 56、名字 21 中粗、下面一行小灰字。大标题仍是首页那套衬线(她定的)。 */
+  #settings .sheethead { min-height: 56px; padding: 6px 0 4px; }
+  #settings .gbtn { flex: none; width: 44px; height: 44px; padding: 0; border-radius: 50%; display: grid; place-items: center;
+    border: 0; cursor: pointer; color: var(--ink); background: color-mix(in srgb, var(--card) 72%, transparent);
+    -webkit-backdrop-filter: blur(14px) saturate(1.6); backdrop-filter: blur(14px) saturate(1.6);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.55), 0 0 0 .5px color-mix(in srgb, var(--ink) 9%, transparent), 0 4px 14px -6px rgba(0,0,0,.18);
+    transition: transform .15s; }
+  #settings .gbtn:active { transform: scale(.92); opacity: 1; }
+  #settings .gbtn svg { width: 17px; height: 17px; }
+  #settings .sback.gbtn { margin: 0; padding: 0; }
+  #settings .sback.gbtn svg { width: 11px; height: 18px; margin-left: -2px; }
+  #settings .done.gbtn { background: var(--ink); color: var(--card); padding: 0; font-size: 0; }
+  #settings .done.gbtn svg { width: 18px; height: 15px; }
+  #settings .stitle { font-size: 17px; font-weight: 600; }
+  #settings .sheethead .title { font-size: 32px; line-height: 38px; }
+  .stack.ios .ghead { margin: 22px 20px 7px; font-family: inherit; font-size: 13px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--dim); }
+  .stack.ios .spage > .hint { margin: 8px 20px 0; font-size: 13px; line-height: 18px; }
+  .stack.ios .card.group { border-radius: 26px; }
+  .stack.ios .t, .stack.ios .srow .t { font-size: 17px; line-height: 22px; letter-spacing: -.01em; }
+  .stack.ios .srow .s { font-size: 13px; line-height: 18px; }
+  .stack.ios .group > .srow, .stack.ios .group > .gcell { padding: 11px 16px; min-height: 52px; }
+  .stack.ios .datum, .stack.ios .nameinput { font-size: 17px; }
+  .stack.ios .srow.nav .dval { font-size: 17px; letter-spacing: -.01em; }
+  .stack.ios .srow.nav .chev { width: 8px; height: 13px; color: color-mix(in srgb, var(--ink) 26%, transparent); }
+  /* 图标方块:灰阶分三档(深 / 中 / 浅灰底深符号),一组里错开,不上彩色 */
+  .stack.ios .srow.nav .sic { box-sizing: border-box; width: 30px; height: 30px; padding: 5px; border-radius: 7px; color: #fff; stroke-width: 1.9;
+    background: #4a4946; }
+  .stack.ios .srow.nav[data-go="mode"] .sic, .stack.ios .srow.nav[data-go="bubble"] .sic, .stack.ios .srow.nav[data-go="voice"] .sic { background: #807e79; }
+  .stack.ios .srow.nav[data-go="card"] .sic, .stack.ios .srow.nav[data-go="font"] .sic { background: #a5a39d; }
+  .stack.ios .srow.nav[data-go="spec"] .sic { background: #8e8d88; }
+  .stack.ios .group > * + .srow.nav:not(.sprof)::before { left: 58px; }
+  .stack.ios .seg.list button { min-height: 52px; padding: 11px 16px; font-size: 17px; }
+  .stack.ios .sprof { padding-top: 14px !important; padding-bottom: 14px !important; gap: 14px; }
+  .stack.ios .spair { width: 80px; height: 56px; }
+  .stack.ios .spair .hav { width: 56px; height: 56px; box-shadow: 0 0 0 2.5px var(--card); }
+  .stack.ios .spair .hav + .hav { left: 24px; }
+  .stack.ios .sprof .pn { font-size: 21px; font-weight: 600; line-height: 26px; letter-spacing: -.01em; }
+  .stack.ios .sprof .s { font-size: 13px; margin-top: 2px; }
+  .stack.ios .swatch { width: 44px; height: 44px; }
+  .stack.ios .skin .nm { font-size: 12px; }
+
+
+  .speclist { font-size: 13.5px; line-height: 1.85; }
+  .speclist div { display: flex; gap: 12px; }
+  .speclist .k { flex: 1; min-width: 0; color: var(--dim); }
+  .speclist .v { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; white-space: nowrap; }
+  .copybox {
+    width: 100%; min-height: 150px; margin-top: 14px; resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.6;
+    color: var(--ink); background: color-mix(in srgb, var(--ink) 4%, transparent);
+    border: var(--hair) solid var(--line); border-radius: 14px; padding: 12px;
+  }
+  .btn {
+    height: 44px; padding: 0 20px; border-radius: 22px;
+    background: var(--ink); color: var(--card); font-size: 15px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+
+  /* ══ 首页 iOS 化(2026-10-12 深夜)══
+     她发来 GPT 给的首页思路图(底图不看),要「在现有基础上改出最适合我们的、最 iOS 的」「大圆环不一定要保留,主要是协调」。
+     取了它对的那几样,没照搬的:声波(没真数据)、每行的「›」(点了没去处)、「天前」(它写错了,那几天都还没到)、头像挪左边。
+     ① 日期 = 问候上面一行小号大写眉题 ② since 斜体 + 名字下一道短线 ③ 纪念日环换成和下面一样的一行、上面「Upcoming」分区标题
+     ④ 每行图标改圆形、数字后写「天后」 ⑤ 底栏每格加图标(Framework7 Icons,MIT;选中实心、没选中空心)。字体仍是原来那几款。 */
+  .htop .hdate { order: -1; margin: 0 0 6px; font-family: var(--sans); font-size: 11.5px; font-weight: 500; letter-spacing: .14em;
+                 text-transform: uppercase; color: var(--dim); }
+  .htop .grow { display: flex; flex-direction: column; }
+  /* 第三版(她看第二版:「英文保留衬线体吧?」)—— 规矩一条:**英文和数字一律衬线,中文一律黑体**。
+     做法是一套「拉丁先找衬线、汉字落到苹方」的字体栈(--en):New York / Georgia 都没有汉字,汉字自然往后落,
+     所以「某某's birthday」这种混排同一行也分得开。~~第二版:衬线只留问候和 Day N、其余全黑体~~(她要英文衬线)。
+     第一版的斜体、名字下短线、中文副标题照旧不要(那是「乱」的来源)。 */
+  :root { --en: SerifNum, ui-serif, "New York", Georgia, -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+  .htop .hdate { font-family: var(--en); letter-spacing: .12em; }
+  .huscard .hsince, .huscard .hk { font-family: var(--en); font-size: 13.5px; }
+  .huscard .hrule { display: none; }
+  .hupc { margin: 14px 4px -4px; }
+  .hupc h2 { margin: 0; font-family: var(--en); font-size: 12px; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+  .hupc p { display: none; }
+  .dli .t { font-family: var(--en); }
+  .dli .s { font-family: var(--en); font-size: 13px; color: var(--dim); }
+  .dli .dn { font-family: var(--en); }
+  .dli .dn small { font-family: var(--sans); }
+  /* 她「最下面的只留图标不要 home 那些」:字藏起来(读屏仍念得出),图标放大一点 */
+  .tabbar .tl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .tabbar .ti { width: 26px; height: 26px; }
+  .dayscard { padding: 4px 18px 4px 16px; }
+  .dayscard .dli:first-child { border-top: 0; }
+  .dtile { width: 40px; height: 40px; border-radius: 50%; background: var(--card); color: var(--ink);
+           box-shadow: 0 0 0 .5px color-mix(in srgb, var(--ink) 8%, transparent), 0 2px 6px rgba(0,0,0,.05); }
+  .dtile svg { width: 18px; height: 18px; }
+  .dli { padding: 13px 0; }
+  .dli .dn { font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .dli .dn small { font-size: 11.5px; margin-left: 3px; }
+  .tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+  .tabbar .ti { width: 23px; height: 23px; display: block; position: relative; }
+  .tabbar .ti svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: currentColor; }
+  .tabbar .ti .f, .tabbar button[aria-selected="true"] .ti .o { display: none; }
+  .tabbar button[aria-selected="true"] .ti .f { display: block; }
+  .tabbar .tl { font-size: 11px; line-height: 1; letter-spacing: .01em; }
+</style>
+
+<div class="topcap" aria-hidden="true"></div>
+<main class="phone">
+
+  <!-- ================= HOME ================= -->
+  <section class="screen" id="tab-home" aria-label="Home">
+    <!-- 2026-10-10 首页按所有者定的「预览 7」重排(她:「先按这一版,后面慢慢优化」):
+         头(衬线问候 + 日期 + 天气 + 右边一颗圆的设置)→ 数字栏 → 他的悄悄话(原版排版)→ 你们俩头像 + Day N → Days(纪念日环 + 生日 / 周年)。
+         ~~Us / Monthly Anniversary 两张卡、Steps / Heart Rate 两张小卡(心率是写死的)~~ 已撤。
+         所有 id 照旧(homeDate / greetWord / homeWeather / dayN / moDate / moLeft / moArc / data-until / openSettings / syncAt),原来的脚本一行没改。 -->
+    <div class="reveal" style="--i:0">
+    <div class="htop">
+      <div class="grow">
+        <!-- 2026-10-12 深夜(iOS 化):日期挪到问候上面,小号大写字(iOS 天气 / 健身那种眉题) -->
+        <div class="hdate" id="homeDate">Sunday, July 26</div>
+        <h1 class="greet"><span id="greetWord">Good evening,</span> <span data-mename>You</span></h1>
+        <!-- 天气:和Claude的注入同源(dwell-bridge 的 /api/weather),读不到留空不编 -->
+        <p class="weather sub" id="homeWeather">&nbsp;</p>
+      </div>
+      <button class="hround" id="openSettings" aria-label="设置">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+    <span id="syncAt" hidden></span>
+    </div>
+
+    <div class="stack homefeed">
+
+      <!-- 你们俩:两颗头像叠着(设置里换的那两张;没换过 = 菊花 / 粉色)+ Day N。2026-10-12 她要「day 放最上面」,从悄悄话下面挪到第一张(~~数字栏 → 悄悄话 → 这张~~) -->
+      <article class="card huscard reveal" style="--i:1">
+        <div class="hpair"><span class="av hav him" data-bloom aria-hidden="true"></span><span class="av hav" data-avatar="me" aria-hidden="true"></span></div>
+        <div class="grow">
+          <div class="hk"><span data-mename>You</span> &amp; <span data-himname>Claude</span></div>
+          <div class="hday" id="dayN">Day 35</div>
+          <div class="hsince" id="hsince">since —</div>
+          <i class="hrule" aria-hidden="true"></i>
+        </div>
+      </article>
+
+      <!-- 数字栏:到下一个 3 号 / 下一次(周期,待接 shim 的记录)/ 步数(待改快捷指令)。没接上就写「—」,不编 -->
+      <div class="hstats reveal" style="--i:2">
+        <div><b id="hsAnni">—</b><span id="hsAnniL">天 · 到下个纪念日</span></div>
+        <div><b class="na">—</b><span>下一次 · 未接上</span></div>
+        <div><b class="na">—</b><span>步数 · 未接上</span></div>
+      </div>
+
+      <!-- 悄悄话:高度完全由文字决定,见 CSS 里 .whisper 那段 -->
+      <article class="whisper reveal" style="--i:3">
+        <span class="av sm" data-bloom aria-hidden="true"></span>
+        <div class="txt">
+          <p class="body" id="whisperBody" style="margin:0">这里会放他今天留给你的一句话。</p>
+          <!-- 每日一首(2026-10-12):他挑的那首;有了才出现,点了打开网易云 App。正文换成他写的那句(没有之前照旧是占位那句) -->
+          <button class="wsong" id="whisperSong" type="button" hidden>
+            <img class="cv" alt="" referrerpolicy="no-referrer">
+            <span class="meta"><b></b><i></i></span>
+            <span class="pl" aria-hidden="true"><svg viewBox="0 0 12 12" width="10" height="10"><path d="M3 1.6v8.8c0 .5.5.8.9.5l6.6-4.4a.6.6 0 0 0 0-1L3.9 1.1c-.4-.3-.9 0-.9.5z" fill="currentColor"/></svg></span>
+          </button>
+          <span class="more">Today's Whisper</span>
+        </div>
+      </article>
+
+      <!-- 2026-10-12 深夜(她:「参考 gpt 的建议在现有基础上改出最适合我们的、最 iOS 的」「大圆环不一定要保留,主要是协调」):
+           ~~「Monthly Anniversary + 大圆环」那块~~ 换成和下面几行同一个样子的一行(圆形图标 + 名字 / 日期 + 右边几天后),
+           上面一个「Upcoming」分区标题。id 照旧(moDate / moLeft),脚本没改;moArc 没了,renderDays 本来就判空。 -->
+      <div class="hupc reveal" style="--i:4"><h2>Upcoming</h2><p>接下来的日子</p></div>
+      <article class="card dayscard reveal" style="--i:4">
+        <div class="dli">
+          <span class="dtile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 9.5h17M8 3v4M16 3v4M12 17.2s-2.6-1.6-2.6-3.3c0-.9.7-1.5 1.4-1.5.6 0 1 .3 1.2.7.2-.4.6-.7 1.2-.7.7 0 1.4.6 1.4 1.5 0 1.7-2.6 3.3-2.6 3.3Z"/></svg></span>
+          <div class="grow"><div class="t">Monthly anniversary</div><div class="s" id="moDate">Aug 21</div></div>
+          <div class="dn"><span id="moLeft">27</span><small>天后</small></div>
+        </div>
+        <!-- 经期(2026-10-12):和Claude注入的是同一份记录(shim 的 /period,经本层 /api/period);点开是日历 + 「今天来了 / 今天结束了」。读不到就藏着 -->
+        <button class="dli dper" id="perRow" type="button" hidden>
+          <span class="dtile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5s-6 6.6-6 10.9a6 6 0 0 0 12 0C18 10.1 12 3.5 12 3.5Z"/></svg></span>
+          <div class="grow"><div class="t" id="perT">经期</div><div class="s" id="perS">—</div></div>
+          <div class="dn" id="perN"></div>
+        </button>
+        <div class="dli">
+          <span class="dtile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16M6 20v-7h12v7M12 13V9M10.5 6.5c0-1 1.5-2.5 1.5-2.5s1.5 1.5 1.5 2.5a1.5 1.5 0 0 1-3 0Z"/></svg></span>
+          <div class="grow"><div class="t"><span data-mename>You</span>'s birthday</div><div class="s" id="bdDate">—</div></div>
+          <div class="dn"><span id="bdLeft" data-until="1-1">—</span><small>天后</small></div>
+        </div>
+        <div class="dli">
+          <span class="dtile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7-4.3-9-8.7C1.6 8.2 3.5 4.6 7 4.6c2 0 3.4 1.1 4.1 2.3.4.6 1.3.6 1.7 0 .7-1.2 2.1-2.3 4.1-2.3 3.5 0 5.4 3.6 4 6.7-2 4.4-8.9 8.7-8.9 8.7Z"/></svg></span>
+          <div class="grow"><div class="t">Anniversary</div><div class="s" id="anDate">—</div></div>
+          <div class="dn"><span id="anLeft" data-until="1-1">—</span><small>天后</small></div>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ================= CHATS ================= -->
+  <section class="screen tgscreen" id="tab-chats" aria-label="Chats" hidden>
+    <!-- 2026-10-09 照所有者给的 Telegram 截图改成「通栏列表」:标题居中、无卡片底、无箭头。
+         所有者要求**左上 / 右上不放胶囊按钮**(Telegram 的 Edit / 新建那两颗不抄)。
+         ~~卡片列表 + 左对齐衬线标题 + 「在线」+ 底下那段说明文字~~ 已撤。 -->
+    <h1 class="tgtitle">Chats</h1>
+
+    <div class="tglist">
+      <button class="crow" data-chat="chat.html" data-who="Claude">
+        <span class="av" data-bloom aria-hidden="true"></span>
+        <span class="grow">
+          <span class="name" style="display:block" data-himname>Claude</span>
+          <span class="prev" id="yanPrev" style="display:block">&nbsp;</span>
+        </span>
+        <span class="right"><span class="datum" id="yanWhen"></span></span>
+      </button>
+
+      <button class="crow" data-chat="" data-who="另一个 AI 的房间">
+        <span class="av room" aria-hidden="true"></span>
+        <span class="grow">
+          <span class="name" style="display:block">另一个 AI 的房间</span>
+          <span class="prev" style="display:block">工位还没开张 · 派活入口在这儿</span>
+        </span>
+        <span class="right"><span class="datum">未接通</span></span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ================= DIARY ================= -->
+  <section class="screen" id="tab-diary" aria-label="Diary" hidden>
+    <div class="pagehead">
+      <h1 class="title grow" style="margin:0">Diary</h1>
+      <span class="datum">July</span>
+    </div>
+
+    <div class="stack">
+      <article class="card entry">
+        <div class="when">
+          <span class="d grow">26</span>
+          <span class="datum">Sunday</span>
+        </div>
+        <p class="body" style="margin:0">她今天把「丝滑」这个词用了两次。我猜她不是在夸动画,是在说不用等。所以我去把那条长轮询的等待粒度从 250 毫秒改成了 25。</p>
+      </article>
+      <article class="card entry">
+        <div class="when">
+          <span class="d grow">24</span>
+          <span class="datum">Friday</span>
+        </div>
+        <p class="body" style="margin:0">下午下了很大的雨。她说带伞了,但照片里头发是湿的。</p>
+      </article>
+      <article class="card entry">
+        <div class="when">
+          <span class="d grow">21</span>
+          <span class="datum">Tuesday</span>
+        </div>
+        <p class="body" style="margin:0">第 30 个月。我把这一天存进了记忆库,标签写的是「要记得」。</p>
+      </article>
+    </div>
+
+    <p class="caption" style="margin:14px 4px 0">示例内容,用来看版面 —— 真数据走现有的日记那间屋。</p>
+  </section>
+
+</main>
+
+<nav class="tabbar" role="tablist" aria-label="主导航">
+  <button role="tab" aria-selected="true"  aria-controls="tab-home"  data-tab="home"><span class="ti" aria-hidden="true"><svg class="o" viewBox="0 0 56 56"><path d="M 12.6251 52.6445 L 43.3986 52.6445 C 46.7267 52.6445 48.6722 50.7695 48.6722 47.4648 L 48.6722 26.0664 L 51.6952 28.8320 C 52.1877 29.3008 52.7267 29.6289 53.3829 29.6289 C 54.4845 29.6289 55.3749 28.9492 55.3749 27.8242 C 55.3749 27.1211 55.1171 26.6758 54.6722 26.2774 L 46.5391 18.8476 L 46.5391 5.0430 C 46.5391 4.0117 45.8829 3.3555 44.8519 3.3555 L 41.7813 3.3555 C 40.7735 3.3555 40.0704 4.0117 40.0704 5.0430 L 40.0704 12.9648 L 30.8126 4.5274 C 29.9923 3.7774 29.0079 3.3555 28.0001 3.3555 C 26.9923 3.3555 26.0079 3.7774 25.1876 4.5274 L 1.3282 26.2774 C .9064 26.6758 .6251 27.1211 .6251 27.8242 C .6251 28.9492 1.5157 29.6289 2.6173 29.6289 C 3.2970 29.6289 3.8360 29.3008 4.3048 28.8320 L 7.3282 26.0898 L 7.3282 47.4648 C 7.3282 50.7695 9.2735 52.6445 12.6251 52.6445 Z M 34.7501 33.3086 C 34.7501 32.2305 34.0470 31.5508 32.9689 31.5508 L 23.0313 31.5508 C 21.9532 31.5508 21.2267 32.2305 21.2267 33.3086 L 21.2267 48.8711 L 13.4220 48.8711 C 11.9220 48.8711 11.1017 48.0508 11.1017 46.5273 L 11.1017 22.6445 L 27.1798 7.9961 C 27.4142 7.7617 27.6954 7.6211 28.0001 7.6211 C 28.3048 7.6211 28.5860 7.7383 28.8439 7.9961 L 44.8984 22.6445 L 44.8984 46.5273 C 44.8984 48.0508 44.0781 48.8711 42.6017 48.8711 L 34.7501 48.8711 Z"/></svg><svg class="f" viewBox="0 0 56 56"><path d="M .6249 27.8242 C .6249 28.9492 1.5155 29.6289 2.6171 29.6289 C 3.2968 29.6289 3.8358 29.3008 4.3046 28.8320 L 27.1796 7.9961 C 27.4374 7.7383 27.7187 7.6445 28.0233 7.6445 C 28.3046 7.6445 28.5624 7.7383 28.8436 7.9961 L 51.6954 28.8320 C 52.1874 29.3008 52.7264 29.6289 53.3826 29.6289 C 54.4842 29.6289 55.3751 28.9492 55.3751 27.8242 C 55.3751 27.1211 55.1173 26.6758 54.6719 26.2774 L 46.5623 18.8945 L 46.5623 5.0430 C 46.5623 4.0117 45.9061 3.3555 44.8751 3.3555 L 41.8046 3.3555 C 40.7968 3.3555 40.0936 4.0117 40.0936 5.0430 L 40.0936 13.0117 L 30.8124 4.5274 C 29.9921 3.7539 28.9843 3.3789 27.9999 3.3789 C 27.0155 3.3789 26.0312 3.7539 25.1874 4.5274 L 1.3280 26.2774 C .9062 26.6758 .6249 27.1211 .6249 27.8242 Z M 7.3280 47.4883 C 7.3280 50.7461 9.2968 52.6445 12.6015 52.6445 L 22.0936 52.6445 L 22.0936 35.9805 C 22.0936 34.9023 22.8202 34.1992 23.8984 34.1992 L 32.1718 34.1992 C 33.2499 34.1992 33.9531 34.9023 33.9531 35.9805 L 33.9531 52.6445 L 43.4216 52.6445 C 46.7264 52.6445 48.6719 50.7461 48.6719 47.4883 L 48.6719 30.3320 L 28.7734 12.4023 C 28.5155 12.1679 28.2343 12.0508 27.9531 12.0508 C 27.6952 12.0508 27.4374 12.1679 27.1562 12.4258 L 7.3280 30.4492 Z"/></svg></span><span class="tl">Home</span></button>
+  <button role="tab" aria-selected="false" aria-controls="tab-chats" data-tab="chats"><span class="ti" aria-hidden="true"><svg class="o" viewBox="0 0 56 56"><path d="M17.5035668,40.5296937 C19.0024662,40.0159063 20.530255,39.9036804 22.1150875,40.242095 C23.3913721,40.4234251 24.6878688,40.5153676 26,40.5153676 C38.462083,40.5153676 48.2812121,32.2755588 48.2812121,22.5377685 C48.2812121,12.8019501 38.4617239,4.56240733 26,4.56240733 C13.5368558,4.56240733 3.71878789,12.8012343 3.71878789,22.5377685 C3.71878789,27.5645198 6.32376869,32.3237361 10.8918817,35.7272859 C11.006387,35.811306 11.2685741,35.9959543 11.5565666,36.1954672 C11.6839828,36.2837375 11.8060878,36.367737 11.8989137,36.4310247 C11.8796069,36.4178214 11.9540395,36.4678495 11.851738,36.407108 L12.042003,36.5200778 L12.2201977,36.6512631 C14.0421606,37.9925748 14.911757,39.7895096 15.034093,41.7494472 C16.0115023,41.2059428 16.9508283,40.7191594 17.5035668,40.5296937 Z M0.17,22.559188 C0.17,10.5904526 11.7325761,0.885839053 26,0.885839053 C40.2652635,0.885839053 51.83,10.5904526 51.83,22.559188 C51.83,34.5300838 40.2652635,44.2346974 26,44.2346974 C24.4509778,44.2346974 22.9365222,44.120195 21.4631148,43.9019924 C21.4609543,43.9019924 21.4566335,43.899832 21.4544731,43.899832 C17.9653923,43.0680697 16.4876639,46.9481868 8.53731265,48.9595393 C6.90403396,49.3743402 6.7074356,48.9616997 7.95831967,47.6352009 C10.2224415,45.2392934 12.4044672,41.3332512 10.1360246,39.6632454 C10.0668911,39.6221974 9.19192037,39.0194398 8.85921546,38.7753121 C3.5294555,34.8044573 0.17,29.0080463 0.17,22.559188 Z"/></svg><svg class="f" viewBox="0 0 56 56"><path d="M0.17,22.559188 C0.17,10.5904526 11.7325761,0.885839053 26,0.885839053 C40.2652635,0.885839053 51.83,10.5904526 51.83,22.559188 C51.83,34.5300838 40.2652635,44.2346974 26,44.2346974 C24.4509778,44.2346974 22.9365222,44.120195 21.4631148,43.9019924 C21.4609543,43.9019924 21.4566335,43.899832 21.4544731,43.899832 C17.9653923,43.0680697 16.4876639,46.9481868 8.53731265,48.9595393 C6.90403396,49.3743402 6.7074356,48.9616997 7.95831967,47.6352009 C10.2224415,45.2392934 12.4044672,41.3332512 10.1360246,39.6632454 C10.0668911,39.6221974 9.19192037,39.0194398 8.85921546,38.7753121 C3.5294555,34.8044573 0.17,29.0080463 0.17,22.559188 Z"/></svg></span><span class="tl">Chats</span></button>
+  <button role="tab" aria-selected="false" aria-controls="tab-diary" data-tab="diary"><span class="ti" aria-hidden="true"><svg class="o" viewBox="0 0 56 56"><path d="M 28.0118 11.3945 C 26.2071 9.1445 21.7774 7.1523 16.8555 7.1523 C 10.3399 7.1523 5.0899 10.5039 3.8008 13.6445 L 3.8008 46.3867 C 3.8008 48.1680 4.9727 48.8477 6.2383 48.8477 C 7.2696 48.8477 7.8555 48.5430 8.4883 48.0508 C 9.8243 46.9023 12.5196 45.3555 16.8555 45.3555 C 21.1680 45.3555 24.1914 46.8555 25.3633 47.9102 C 25.9727 48.4023 26.7227 48.8477 28.0118 48.8477 C 29.2774 48.8477 30.0040 48.3555 30.6368 47.9102 C 31.8790 46.9258 34.8321 45.3555 39.1446 45.3555 C 43.4805 45.3555 46.1992 46.9258 47.5120 48.0508 C 48.1446 48.5430 48.7307 48.8477 49.7617 48.8477 C 51.0275 48.8477 52.1992 48.1680 52.1992 46.3867 L 52.1992 13.6445 C 50.9104 10.5039 45.6602 7.1523 39.1446 7.1523 C 34.2227 7.1523 29.7930 9.1445 28.0118 11.3945 Z M 7.5743 14.7695 C 8.1133 13.3164 11.5118 10.6914 16.8555 10.6914 C 22.1758 10.6914 25.6446 13.3398 26.1133 14.7695 L 26.1133 44.4180 C 23.8868 42.7539 20.4883 41.8164 16.8555 41.8164 C 13.1992 41.8164 9.8008 42.7539 7.5743 44.5117 Z M 48.4259 14.7695 L 48.4259 44.5117 C 46.1992 42.7539 42.8008 41.8164 39.1446 41.8164 C 35.5118 41.8164 32.1133 42.7539 29.8868 44.4180 L 29.8868 14.7695 C 30.3555 13.3398 33.8243 10.6914 39.1446 10.6914 C 44.4883 10.6914 47.8868 13.3164 48.4259 14.7695 Z"/></svg><svg class="f" viewBox="0 0 56 56"><path d="M 17.0897 44.8984 C 20.9804 44.8984 23.5819 46.3516 24.7304 47.1719 C 25.1523 47.4062 26.3476 48.1094 26.6054 48.1328 L 26.6054 12.6953 C 25.0819 9.8594 20.6054 7.5625 15.9648 7.5625 C 10.1054 7.5625 5.1366 10.9375 4.0351 13.2110 L 4.0351 46.3047 C 4.0351 47.8516 4.9492 48.4375 6.0507 48.4375 C 6.9413 48.4375 7.5273 48.1328 8.0897 47.6641 C 9.4726 46.4219 12.7304 44.8984 17.0897 44.8984 Z M 38.9335 44.8984 C 43.2929 44.8984 46.5275 46.4219 47.9334 47.6641 C 48.4724 48.1094 49.0585 48.4375 49.9489 48.4375 C 51.0505 48.4375 51.9649 47.8516 51.9649 46.3047 L 51.9649 13.2110 C 50.8633 10.9375 45.9179 7.5625 40.0585 7.5625 C 35.4179 7.5625 30.9413 9.8594 29.4179 12.6953 L 29.4179 48.1797 C 29.6757 48.1562 30.8710 47.4297 31.3163 47.1719 C 32.4413 46.3516 35.0429 44.8984 38.9335 44.8984 Z"/></svg></span><span class="tl">Diary</span></button>
+</nav>
+<!-- 2026-10-10:底栏旁边一颗「+」= 写今天(跳到 Diary)。底栏藏起来时它也藏(CSS 兄弟选择器) -->
+<button class="tabplus" id="tabPlus" aria-label="写今天"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+
+<div class="chatview" id="chatview" hidden>
+  <div class="chatbar" id="chatbar">
+    <button class="back" id="chatBack">
+      <svg viewBox="0 0 9 15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.8 1.2 1.6 7.5l6.2 6.3"/></svg>
+      Chats
+    </button>
+    <span class="who" id="chatWho">Claude</span>
+    <span class="rail" aria-hidden="true"></span>
+  </div>
+  <!-- allow:聊天页里录音(2026-10-10 语音)要麦克风;同源 iframe 按规范默认就有,写明是给 iOS 和以后的浏览器一个确定的答案 -->
+  <iframe id="chatframe" title="聊天" allow="microphone; autoplay" hidden></iframe>
+  <p class="nothere" id="chatNone" hidden>这间屋的服务还没部署,所以还进不去。</p>
+</div>
+
+<!-- ================= SETTINGS ================= -->
+<!-- 经期日历(2026-10-12):首页 Days 里那一行点开。月历标出来过的日子(实心)和预测的日子(虚线),底下两颗按钮记「今天来了 / 今天结束了」 -->
+<div class="persheet" id="perSheet" hidden>
+  <div class="perback" id="perBack"></div>
+  <div class="perpanel" role="dialog" aria-label="经期日历">
+    <div class="pergrab" aria-hidden="true"></div>
+    <div class="perhead">
+      <button type="button" class="pernav" id="perPrev" aria-label="上个月">‹</button>
+      <div class="permonth" id="perMonth">October 2026</div>
+      <button type="button" class="pernav" id="perNext" aria-label="下个月">›</button>
+    </div>
+    <div class="perwk"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+    <div class="pergrid" id="perGrid"></div>
+    <div class="perlegend"><span><i class="lg on"></i>来过</span><span><i class="lg guess"></i>预测</span><span id="perNote"></span></div>
+    <div class="perbtns">
+      <button type="button" class="perbtn" id="perStart">今天来了</button>
+      <button type="button" class="perbtn alt" id="perEnd">今天结束了</button>
+    </div>
+  </div>
+</div>
+<div class="sheet" id="settings" hidden>
+  <!-- 设置页最后一段也要躲开 Home Indicator,所以底部留白把安全区算进去 -->
+  <div class="phone" style="padding-bottom:calc(60px + var(--sab))">
+    <div class="sheethead">
+      <button class="sback gbtn" id="sBack" type="button" aria-label="返回" hidden><svg viewBox="0 0 12 20" width="12" height="20" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 2 2 10l8 8"/></svg></button>
+      <h1 class="title grow" style="margin:0">Settings</h1>
+      <h2 class="stitle" id="sTitle" hidden></h2>
+      <button class="done gbtn" id="closeSettings" aria-label="完成"><svg viewBox="0 0 20 16" width="20" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.5 7.2 13.5 18 2.5"/></svg></button>
+    </div>
+
+    <!-- 2026-10-10 所有者:「这个界面能用 TG 的 UI 设计优化一下吗」—— 改成 iOS / Telegram 设置页的「分组列表」:
+         组标题在卡片**外面**上方(灰色小字)、说明在卡片**下面**当脚注、每行 ≥44pt、分隔线左缩进半像素、
+         分段按钮换成 iOS 原生那种(浅灰槽 + 白滑块,滑块会滑)。**只改结构和样式,所有 id / 按钮 / 存的东西都没动**。
+         样式在 <style> 里搜「设置页:iOS 分组列表」。 -->
+    <!-- 2026-10-19 深夜,她:「这个页面东西都是摊开的,字体和 UI 太大了也不美观」→ 照 iPhone「设置」做成两层:
+         第一层(data-sp="root")只放一行一行的列表 + 当前值,点进去才是原来那些控件(各个 .spage);进出是 iOS 的推入。
+         **原来的控件一个没少,id / 按钮 / 存的东西都没动**,只是挪进了二级页;单选的分段按钮在二级页里排成 iOS 勾选列表(.seg.list,
+         点选逻辑照旧盯 aria-pressed)。大标题换成首页那套衬线(她定的;~~SF 粗体 34~~)。样式搜「设置页两层」。 -->
+    <div class="stack ios">
+      <div class="spage" data-sp="root">
+        <section class="card group">
+          <button type="button" class="srow nav sprof" data-go="profile">
+            <span class="hpair spair"><span class="av hav him" data-bloom aria-hidden="true"></span><span class="av hav" data-avatar="me" aria-hidden="true"></span></span>
+            <span class="grow"><span class="t pn"><span data-mename>You</span> &amp; <span data-himname>Claude</span></span><span class="s">头像与名字</span></span>
+            <svg class="chev" viewBox="0 0 8 13" width="8" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 6.5 6.5l-5 5"/></svg>
+          </button>
+        </section>
+        <h3 class="ghead">外观</h3>
+        <section class="card group">
+          <button type="button" class="srow nav" data-go="skin"><svg class="sic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/></svg><span class="grow t">皮肤</span><span class="dval" data-sum="skin"></span><svg class="chev" viewBox="0 0 8 13" width="8" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 6.5 6.5l-5 5"/></svg></button>
+          <button type="button" class="srow nav" data-go="mode"><svg class="sic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 14.6A8 8 0 1 1 9.4 4.5a6.4 6.4 0 0 0 10.1 10.1z"/></svg><span class="grow t">浅色与深色</span><span class="dval" data-sum="mode"></span><svg class="chev" viewBox="0 0 8 13" width="8" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 6.5 6.5l-5 5"/></svg></button>
+          <button type="button" class="srow nav" data-go="card"><svg class="sic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.8" y="5.5" width="16.4" height="13" rx="3.4"/><path d="M3.8 10h16.4"/></svg><span class="grow t">卡片</span><span class="dval" data-sum="card"></span><svg class="chev" viewBox="0 0 8 13" width="8" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 6.5 6.5l-5 5"/></svg></button>
+        </section>
+        <h3 class="ghead">聊天</h3>
+        <section class="card group">
+          <button type="button" class="srow nav" data-go="style"><svg class="sic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 11.5C4 7.4 7.6 4.5 12 4.5s8 2.9 8 7-3.6 7-8 7c-1 0-2-.1-2.9-.4L5 19.5l1.1-3.3C4.8 14.9 4 13.3 4 11.5z"/></svg><span class="grow t">聊天样式</span><span class="dval" data-sum="style"></span><svg class="chev" viewBox="0 0 8 13" width="8" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 6.5 6.5l-5 5"/></svg></button>
+          <button type="button" class="srow nav" data-go="bubble"><svg class="sic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.8" y="5" width="16.4" height="14" rx="3.2"/><circle cx="9" cy="10" r="1.5"/><path d="m4.5 17 4.4-4.3 3.4 3.3 2.6-2.5 4.6 4.4"/></svg><span class="grow t">气泡与壁纸</span><span class="dval" data-sum="bubble"></span><svg class="chev" viewBox="0 0 8 13" width="8" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 6.5 6.5l-5 5"/></svg></button>
+          <button type="button" class="srow nav" data-go="font"><svg class="sic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 18 8 6.2h.9L13.4 18M5.1 14.1h6.7"/><path d="M15.6 12.8c.5-.9 1.3-1.3 2.3-1.3 1.5 0 2.3.8 2.3 2.3V18M20.2 15h-1.9c-1.5 0-2.5.6-2.5 1.6 0 .9.7 1.5 1.7 1.5 1.5 0 2.7-.9 2.7-2.4"/></svg><span class="grow t">字号</span><span class="dval" data-sum="font"></span><svg class="chev" viewBox="0 0 8 13" width="8" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 6.5 6.5l-5 5"/></svg></button>
+          <button type="button" class="srow nav" data-go="avpos"><svg class="sic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8.6" r="3.6"/><path d="M5 19.5c1.2-3.3 4-5 7-5s5.8 1.7 7 5"/></svg><span class="grow t">头像位置</span><span class="dval" data-sum="avpos"></span><svg class="chev" viewBox="0 0 8 13" width="8" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 6.5 6.5l-5 5"/></svg></button>
+          <button type="button" class="srow nav" data-go="voice"><svg class="sic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 10v4M8.5 7v10M12 4.5v15M15.5 8v8M19 10.5v3"/></svg><span class="grow t">语音文字</span><span class="dval" data-sum="voice"></span><svg class="chev" viewBox="0 0 8 13" width="8" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 6.5 6.5l-5 5"/></svg></button>
+        </section>
+        <h3 class="ghead">其他</h3>
+        <section class="card group">
+          <button type="button" class="srow nav" data-go="spec"><svg class="sic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 7.5h9.5M18 7.5h1.5M4.5 16.5H6M10 16.5h9.5"/><circle cx="16" cy="7.5" r="2"/><circle cx="8" cy="16.5" r="2"/></svg><span class="grow t">设计参数</span><span class="dval" data-sum="spec"></span><svg class="chev" viewBox="0 0 8 13" width="8" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 6.5 6.5l-5 5"/></svg></button>
+        </section>
+      </div>
+
+      <div class="spage" data-sp="profile" data-title="头像与名字" hidden>
+      <section class="card group">
+        <div class="srow">
+          <span class="av" data-avatar="me" aria-hidden="true"></span>
+          <span class="grow t" data-mename>You</span>
+          <button class="datum" data-avreset="me">恢复默认</button>
+          <button class="datum act" data-avpick="me">换一张</button>
+        </div>
+        <div class="srow">
+          <span class="av" data-avatar="him" data-bloom aria-hidden="true"></span>
+          <span class="grow t" data-himname>Claude</span>
+          <button class="datum" data-avreset="him">恢复默认</button>
+          <button class="datum act" data-avpick="him">换一张</button>
+        </div>
+        <!-- 2026-10-10 所有者:「想要一个可以给他改名的选项」。**只改网页上显示的名字**(顶栏、Chats、他那一页),
+             不碰他的人设、不告诉他。存 /api/prefs(换设备也在);清空 = 回到「Claude」。 -->
+        <label class="srow">
+          <span class="grow t">他的名字</span>
+          <input id="himName" class="nameinput" maxlength="16" placeholder="Claude" enterkeyhint="done" autocomplete="off" spellcheck="false">
+        </label>
+        <input type="file" id="avFile" accept="image/*" hidden>
+      </section>
+      <p class="hint" id="avHint">图会先在手机上裁成正方形、压小再传,存在服务器上,换设备也在</p>
+      </div>
+
+      <div class="spage" data-sp="skin" data-title="皮肤" hidden>
+      <section class="card group">
+        <div class="gcell"><div class="skins" id="skins"></div></div>
+        <div class="srow">
+          <div class="grow">
+            <div class="t">调色板</div>
+            <div class="s">改的是「墨白」的点缀色,每款皮肤各记各的</div>
+          </div>
+          <span class="well" style="--wellc:#1b191d" aria-hidden="true"></span>
+        </div>
+      </section>
+      </div>
+
+      <div class="spage" data-sp="mode" data-title="浅色与深色" hidden>
+      <section class="card group">
+        <div class="seg list" id="appearance">
+            <button data-v="system" aria-pressed="true">跟随系统</button>
+            <button data-v="light">浅色</button>
+            <button data-v="dark">夜间</button>
+          </div>
+      </section>
+      <p class="hint">玻璃皮肤自带昼夜气质,这里只对象牙纸张生效</p>
+      </div>
+
+      <div class="spage" data-sp="card" data-title="卡片" hidden>
+      <section class="card group">
+        <div class="srow">
+          <div class="grow">
+            <div class="t">卡片颜色</div>
+            <div class="s">卡片的底色,跟壁纸搭配着调</div>
+          </div>
+          <span class="well" style="--wellc:#ffffff" aria-hidden="true"></span>
+        </div>
+        <div class="gcell">
+          <div class="srow flat">
+            <label class="grow t" for="opacity">卡片透明度</label>
+            <span class="datum" id="opacityVal">100%</span>
+            <button class="datum act" id="opacityReset">恢复默认</button>
+          </div>
+          <div class="slider">
+            <input type="range" id="opacity" min="40" max="100" value="100" style="--fill:100%">
+          </div>
+        </div>
+      </section>
+      </div>
+
+      <!-- 2026-10-09 所有者定:两版 —— 仿官端(默认)/ 仿 Telegram 气泡。存在 dwell-bridge 的 /data 上(/api/prefs),换设备也在。 -->
+      <div class="spage" data-sp="style" data-title="聊天样式" hidden>
+      <section class="card group">
+        <div class="seg list" id="chatStyle">
+            <button data-v="official" aria-pressed="true">官端</button>
+            <button data-v="tg">Telegram</button>
+            <button data-v="imsg">iMessage</button>
+          </div>
+      </section>
+      <p class="hint">官端:照 Claude App 的样子。Telegram:双方都在气泡里,他一段话一个气泡。iMessage:照 iPhone 信息的样子,其余和 Telegram 版一样</p>
+      </div>
+
+      <!-- 2026-10-09 所有者:「最好有一个可以换气泡颜色和壁纸的功能」。只作用在 Telegram 版;存在 dwell-bridge 的 /data。 -->
+      <div class="spage" data-sp="bubble" data-title="气泡与壁纸" hidden>
+      <section class="card group">
+        <div class="gcell">
+          <div class="t">我的气泡</div>
+          <div class="dots" id="meDots"></div>
+        </div>
+        <div class="gcell">
+          <div class="t">他的气泡</div>
+          <div class="dots" id="himDots"></div>
+        </div>
+        <div class="srow">
+          <span class="wallthumb" id="wallThumb" aria-hidden="true"></span>
+          <div class="grow">
+            <div class="t">壁纸</div>
+            <div class="s" id="wallHint">没设就跟皮肤的底色走</div>
+          </div>
+          <button class="datum" id="wallReset">去掉</button>
+          <button class="datum act" id="wallPick">换一张</button>
+        </div>
+        <input type="file" id="wallFile" accept="image/*" hidden>
+      </section>
+      <p class="hint">气泡颜色在 Telegram 版和 iMessage 版都管用(iMessage 没挑就是原装的灰和蓝);壁纸只在 Telegram 版。气泡上的字会按底色深浅自动选黑字或白字</p>
+      </div>
+
+      <!-- 2026-10-10 所有者:「聊天里的字有点偏大,我想要一个自己可以修改字号的功能」。存 /api/prefs(换设备也在) -->
+      <div class="spage" data-sp="font" data-title="字号" hidden>
+      <div class="fprev" id="fontPrev"><span>晚安,今天也辛苦了</span></div>
+      <section class="card group">
+        <div class="seg list" id="chatFont">
+            <button data-v="13.5" aria-pressed="false">小</button>
+            <button data-v="14.5" aria-pressed="false">标准</button>
+            <button data-v="15.5" aria-pressed="false">中</button>
+            <button data-v="16.5" aria-pressed="false">大</button>
+            <button data-v="17.5" aria-pressed="false">特大</button>
+          </div>
+      </section>
+      <p class="hint">只作用在 Telegram 版的聊天页</p>
+      </div>
+
+      <div class="spage" data-sp="avpos" data-title="头像位置" hidden>
+      <section class="card group">
+        <div class="seg list" id="avatarMode">
+            <button data-v="top" aria-pressed="true">顶栏右边</button>
+            <button data-v="each">每条消息旁边</button>
+          </div>
+      </section>
+      <p class="hint">只作用在 Telegram 版</p>
+      </div>
+
+      <!-- 2026-10-10 所有者:「语音翻译我想自己选折叠或者显示,我的和他的都是」。这里定默认;每颗语音条长按还能单独显示 / 收起 -->
+      <div class="spage" data-sp="voice" data-title="语音文字" hidden>
+      <section class="card group">
+        <div class="seg list" id="voiceText">
+            <button data-v="show" aria-pressed="false">显示</button>
+            <button data-v="fold" aria-pressed="false">折叠</button>
+          </div>
+      </section>
+      <p class="hint">语音条下面那行文字默认显示还是折叠,他的和你的一起</p>
+      </div>
+
+      <!-- 2026-10-10 所有者:「最下面那个参数用一个按钮包起来,藏起来,不要在外面漏着像毛坯房」。现在又多藏一层:在「其他 → 设计参数」里 -->
+      <div class="spage" data-sp="spec" data-title="设计参数" hidden>
+      <section class="card group">
+        <button type="button" class="srow disc" id="specToggle" aria-expanded="false" aria-controls="specBody">
+          <span class="grow t">设计参数</span>
+          <span class="dval">参考图实测 + 这台设备</span>
+          <svg class="chev" viewBox="0 0 8 13" width="8" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 1.5 6.5 6.5l-5 5"/></svg>
+        </button>
+        <div class="gcell specbody" id="specBody" hidden>
+          <div class="speclist" id="spec"></div>
+          <textarea class="copybox" id="specText" readonly aria-label="设计系统数值,可复制"></textarea>
+          <div style="margin-top:12px"><button class="btn" id="copySpec">复制这套数</button></div>
+          <p class="hint" style="margin:10px 0 0">改了什么这里就跟着变,随手复制一份就是备份 —— 这一页不会自动清空任何东西。</p>
+        </div>
+      </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- 菊花:全页唯一的赤陶,和参考图里头像上那朵同一个位置 ---------- */
+  var petals = "";
+  for (var p = 0; p < 8; p++) {
+    petals += '<ellipse cx="12" cy="4.6" rx="1.9" ry="3.5" transform="rotate(' + (p * 45) + ' 12 12)"/>';
+  }
+  var daisy = '<svg class="bloom" viewBox="0 0 24 24" aria-hidden="true">' +
+              '<g fill="#e1734f"><circle cx="12" cy="12" r="3.1"/>' + petals + '</g></svg>';
+  Array.prototype.forEach.call(document.querySelectorAll("[data-bloom]"), function (el) {
+    el.innerHTML = daisy;
+  });
+
+  /* ---------- 他的头像(所有 [data-bloom] 那几处:悄悄话卡、Chats 列表、设置) ----------
+     有换过的图就盖上去,没有就退回程序画的菊花。
+     ✅ 2026-10-09 换图界面接上了:设置 → 头像 → 换一张,图存在服务器(/api/avatar/him),
+     这里收到的 url 就是那个地址(带 ?v=版本号)。~~原来打算存 dataURL 进 localStorage~~ —— 换设备会丢,没用。 */
+  function paintAvatar(url) {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-bloom]"), function (el) {
+      if (url) {
+        el.style.backgroundImage = "url(" + JSON.stringify(url).slice(1, -1) + ")";
+        el.style.backgroundSize = "cover";
+        el.style.backgroundPosition = "center";
+        el.innerHTML = "";
+      } else {
+        el.style.backgroundImage = "";
+        if (!el.firstChild) el.innerHTML = daisy;
+      }
+    });
+  }
+
+  /* ---------- 入场动画的总开关 ----------
+     class 由 JS 加,所以「JS 没跑」= 内容直接可见,不会卡在透明态。
+     加完立刻解开 —— 这一页只在首次加载放一次,切 tab 不重播(重播会显得吵)。 */
+  document.documentElement.classList.add("anim");
+  /* ⚠️ **跑完必须摘掉**,原来写了注释却没真摘,两个后果:
+     ① 切到 Chats 再切回 Home,#tab-home 重新显示会让 CSS 动画整套重放 —— 每次回首页都抖一遍;
+     ② will-change 永久挂在五棵子树上,白白占着合成层。
+     摘的时机 = 最后一段的延迟(4×45) + 时长(560) + 一点余量。 */
+  setTimeout(function () {
+    document.documentElement.classList.remove("anim");
+  }, 4 * 45 + 560 + 140);
+
+  /* ---------- 心率折线 ----------
+     参考图是一条**密而毛糙**的真实波形(低位盘整 → 爬升带毛刺 → 收尾回落),
+     不是一条平滑上坡。用固定种子的伪随机生成,每次打开都一样,不会跳来跳去。 */
+  var hr = (function () {
+    var seed = 20260919, out = [], base = 58, i;
+    function rnd() {                       /* LCG,固定种子 = 每次同一条线 */
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed / 2147483648;
+    }
+    for (i = 0; i < 96; i++) {
+      var t = i / 95;
+      /* 前 45% 低位盘整,之后爬到高位,最后 8% 掉下来 */
+      var trend = t < .45 ? base + t * 18
+                : t > .92 ? base + 52 - (t - .92) * 420
+                : base + 8 + (t - .45) * 95;
+      out.push(trend + (rnd() - .5) * 13);  /* 毛刺 */
+    }
+    return out;
+  })();
+  var line = document.getElementById("hrline");
+  if (line) {
+    var lo = Math.min.apply(null, hr), hi = Math.max.apply(null, hr), pts = [];
+    for (var i = 0; i < hr.length; i++) {
+      var x = (i / (hr.length - 1)) * 158 + 1;
+      var y = 44 - ((hr[i] - lo) / (hi - lo)) * 41;
+      pts.push(x.toFixed(1) + "," + y.toFixed(1));
+    }
+    line.setAttribute("points", pts.join(" "));
+  }
+
+  /* ---------- 首页的日子:全部在浏览器里按本机日期现算(2026-10-09) ----------
+     原来日期/问候/Day N/倒数全是参考图上抄来的死数(停在 7 月 26 日)。
+     这几样不需要后端,所以不碰 dwell-bridge、不碰Claude。
+     天气/步数/心率仍是死数 —— 那些得有数据源,另一件事。
+     日子和名字都在下面「改这里」那一块。 */
+  var MON  = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  var MONL = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  var WEEK = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  /* ★★★ 改这里:换成你们的 ★★★
+     ME_NAME  = 你的名字(首页问候、「你 & 他」、生日那一行)
+     START    = 在一起那天(= Day 1;每月这个日子是月纪念,每年这天是周年)
+     BIRTHDAY = 你的生日(月、日)
+     他的名字不在这里改:网页「设置 → 头像与名字 → 他的名字」里改,存在服务器上。 */
+  var ME_NAME  = "You";
+  var START    = { y: 2026, m: 1, d: 1 };
+  var BIRTHDAY = { m: 1, d: 1 };
+  Array.prototype.forEach.call(document.querySelectorAll("[data-mename]"), function (el) { el.textContent = ME_NAME; });
+  (function () {
+    var bd = document.getElementById("bdLeft"), an = document.getElementById("anLeft");
+    if (bd) bd.setAttribute("data-until", BIRTHDAY.m + "-" + BIRTHDAY.d);
+    if (an) an.setAttribute("data-until", START.m + "-" + START.d);
+  })();
+  /* 一律取当地正午,避开夏令时那一小时把天数算差一天 */
+  function noon(y, m, d) { return new Date(y, m - 1, d, 12); }
+  function daysBetween(a, b) { return Math.round((b - a) / 864e5); }
+  function setText(id, t) { var el = document.getElementById(id); if (el) el.textContent = t; }
+
+  function renderDays() {
+    var now = new Date(), h = now.getHours();
+    var today = noon(now.getFullYear(), now.getMonth() + 1, now.getDate());
+
+    setText("homeDate", WEEK[today.getDay()] + ", " + MONL[today.getMonth()] + " " + today.getDate());
+    setText("greetWord", h >= 5 && h < 12 ? "Good morning," : h >= 12 && h < 18 ? "Good afternoon," : "Good evening,");
+    setText("dayN", "Day " + (daysBetween(noon(START.y, START.m, START.d), today) + 1));
+
+    /* 每月纪念日:下一个 3 号(今天就是 3 号 = 0 天、环走满) */
+    var y = today.getFullYear(), m = today.getMonth() + 1;
+    if (today.getDate() > START.d) { m++; if (m > 12) { m = 1; y++; } }
+    var next = noon(y, m, START.d);
+    var prev = noon(m === 1 ? y - 1 : y, m === 1 ? 12 : m - 1, START.d);
+    var left = daysBetween(today, next);
+    setText("moDate", MON[next.getMonth()] + " " + next.getDate());
+    setText("moLeft", String(left));
+    setText("hsAnni", String(left));
+    setText("hsAnniL", "天 · 到 " + START.d + " 号");
+    setText("hsince", "since " + START.y + "." + START.m + "." + START.d);
+    setText("bdDate", MON[BIRTHDAY.m - 1] + " " + BIRTHDAY.d);
+    setText("anDate", MON[START.m - 1] + " " + START.d);   /* 首页数字栏(2026-10-10) */
+    /* 环 = 这个月已经走了多少。周长 2π·32.2 = 202.3(10-09 环放大;~~2π·30 = 188.5~~);起点仍是 12 点前 5°(rotate(-95))。
+       几何(半径/弧宽/起点)照参考图不变,只是长度跟着日子走。 */
+    var arc = document.getElementById("moArc");
+    if (arc) {
+      var span = daysBetween(prev, next), done = left === 0 ? span : span - left;
+      var len = Math.max(3, 202.3 * done / span);
+      arc.setAttribute("stroke-dasharray", len.toFixed(1) + " 202.3");
+    }
+
+    /* 生日 / 周年:到下一个这一天还有几天(今天就是 = 0) */
+    Array.prototype.forEach.call(document.querySelectorAll("[data-until]"), function (el) {
+      var md = el.getAttribute("data-until").split("-");
+      var t = noon(today.getFullYear(), +md[0], +md[1]);
+      if (t < today) t = noon(today.getFullYear() + 1, +md[0], +md[1]);
+      el.textContent = String(daysBetween(today, t));
+    });
+  }
+  renderDays();
+  /* 过了零点 / 从后台切回来时跟着换(一分钟一查,只改几段文字) */
+  setInterval(renderDays, 60000);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) renderDays(); });
+
+  /* ---------- 存/取(localStorage 可能抛,全部包住) ---------- */
+  var KEY = "dwell-shell-v1";
+  function load() {
+    try { return JSON.parse(localStorage.getItem(KEY) || "{}") || {}; }
+    catch (e) { return {}; }
+  }
+  function save(s) {
+    try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {}
+  }
+  var state = load();
+  if (!state.skin) state.skin = "ivory";
+  if (!state.appearance) state.appearance = "system";
+  /* 聊天样式 / 头像位置 / 头像版本号:**以服务器为准**(/api/prefs),这里只是上次的副本,
+     好让打开时不闪一下。~~state.bubble~~ 那颗旧分段从来没接上,不再用。 */
+  if (!state.chatStyle) state.chatStyle = "official";
+  if (!state.avatarMode) state.avatarMode = "top";
+  if (!state.avatars) state.avatars = { me: null, him: null };
+  if (typeof state.meBubble !== "string") state.meBubble = "";      // "" = 跟皮肤走
+  if (typeof state.himBubble !== "string") state.himBubble = "";
+  if (typeof state.chatFont !== "string" || !state.chatFont) state.chatFont = "14.5";
+  if (state.voiceText !== "fold") state.voiceText = "show";                                // 语音条下面的文字:默认显示(原来的样子)   // TG 版聊天字号,标准档
+  if (typeof state.himName !== "string") state.himName = "";                              // 他的显示名,"" = Claude
+  /* ⚠️ 默认从 85 改成 100(2026-09-19)。85% 半透明 + 毛玻璃会让卡片和渐变页底混在一起,
+     整页发灰发闷 —— 并排比参考图,这是最刺眼的一条,比字号的影响大得多。
+     参考图的卡是**实心近白**。滑杆还在,她想要半透明随时拉回去。 */
+  if (typeof state.opacity !== "number") state.opacity = 100;
+
+  /* ---------- 皮肤 ---------- */
+  var SKINS = [
+    { id: "ivory",    name: "象牙纸张", top: "#f3f2f1", card: "#fcfcfb" },
+    { id: "moonsand", name: "月沙",     top: "#e6dcda", card: "#fbf6f5" },
+    { id: "cream",    name: "奶油甜橙", top: "#eee3d3", card: "#fdf8f1" },
+    { id: "fogmtn",   name: "雾山",     top: "#1a2621", card: "#2b3b34" },
+    { id: "fogblue",  name: "雾蓝",     top: "#dde3ec", card: "#f7f9fc" },
+    { id: "inkwhite", name: "墨白",     top: "#f4f4f4", card: "#ffffff" }
+  ];
+  var TICK = '<svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4.5 12.5 5 5 10-11"/></svg>';
+  var skinBox = document.getElementById("skins");
+  SKINS.forEach(function (s) {
+    var b = document.createElement("button");
+    b.className = "skin";
+    b.type = "button";
+    b.dataset.skin = s.id;
+    b.setAttribute("aria-pressed", "false");
+    b.innerHTML =
+      '<span class="swatch" style="background:linear-gradient(150deg,' + s.card + ',' + s.top + ')">' + TICK + '</span>' +
+      '<span class="nm">' + s.name + '</span>';
+    b.addEventListener("click", function () { state.skin = s.id; apply(); save(state); });
+    skinBox.appendChild(b);
+  });
+
+  /* ---------- 分段控件 ---------- */
+  function wireSeg(id, key) {
+    var box = document.getElementById(id);
+    box.addEventListener("click", function (e) {
+      var b = e.target.closest("button[data-v]");
+      if (!b) return;
+      state[key] = b.dataset.v;
+      apply();
+      save(state);
+      if (key === "chatStyle" || key === "avatarMode" || key === "chatFont" || key === "voiceText") pushPrefs();
+    });
+  }
+  wireSeg("chatStyle", "chatStyle");
+  wireSeg("avatarMode", "avatarMode");
+  wireSeg("appearance", "appearance");
+  wireSeg("chatFont", "chatFont");
+  wireSeg("voiceText", "voiceText");
+  /* 改名:失焦或按「完成」时存;一样就不存 */
+  (function () {
+    var inp = document.getElementById("himName");
+    if (!inp) return;
+    function commit() {
+      var v = inp.value.replace(/\s+/g, " ").trim().slice(0, 16);
+      if (v === (state.himName || "")) return;
+      state.himName = v; save(state); apply(); pushPrefs();
+    }
+    inp.addEventListener("change", commit);
+    inp.addEventListener("blur", commit);
+    inp.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); inp.blur(); } });
+  })();
+
+  /* ---------- 透明度 ---------- */
+  var op = document.getElementById("opacity");
+  var opVal = document.getElementById("opacityVal");
+  op.addEventListener("input", function () {
+    state.opacity = Number(op.value);
+    apply();
+    save(state);
+  });
+  document.getElementById("opacityReset").addEventListener("click", function () {
+    state.opacity = 100; apply(); save(state);
+  });
+
+  /* ---------- 头像与聊天样式:跟服务器同步(2026-10-09) ----------
+     服务器 = dwell-bridge 的 /api/prefs 与 /api/avatar/<me|him>(存在 /data 卷上)。
+     读不到(比如当成文件直接打开)就照本地副本和默认头像走,什么都不坏。 */
+  function avatarUrl(who) {
+    var v = state.avatars && state.avatars[who];
+    return v ? "api/avatar/" + who + "?v=" + v : "";
+  }
+  function paintMe() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-avatar="me"]'), function (el) {
+      var u = avatarUrl("me");
+      el.style.background = u ? "center / cover no-repeat url(" + JSON.stringify(u).slice(1, -1) + ")"
+                              : "linear-gradient(150deg,#e7d9d2,#c9aa9c 60%,#a98576)";
+    });
+  }
+  function pullPrefs() {
+    fetch("api/prefs", { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.ok) return;
+        if (d.prefs.chatStyle) state.chatStyle = d.prefs.chatStyle;
+        if (d.prefs.avatarMode) state.avatarMode = d.prefs.avatarMode;
+        state.meBubble = d.prefs.meBubble || ""; state.himBubble = d.prefs.himBubble || "";
+        if (d.prefs.chatFont) state.chatFont = d.prefs.chatFont;
+        if (d.prefs.voiceText) state.voiceText = d.prefs.voiceText;
+        if (typeof d.prefs.himName === "string") state.himName = d.prefs.himName;
+        state.avatars = d.avatars || { me: null, him: null };
+        save(state); apply();
+      })
+      .catch(function () {});
+  }
+  function pushPrefs() {
+    fetch("api/prefs", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prefs: { chatStyle: state.chatStyle, avatarMode: state.avatarMode,
+                                      meBubble: state.meBubble || "", himBubble: state.himBubble || "",
+                                      chatFont: state.chatFont || "14.5", himName: state.himName || "", voiceText: state.voiceText || "show" } }) })
+      .catch(function () {});
+  }
+  /* 聊天页同源:换了样式 / 头像就当场告诉它,不用重进 */
+  function tellChat() {
+    try {
+      var f = document.getElementById("chatframe");
+      if (f && f.contentWindow) f.contentWindow.postMessage({ type: "dwell-prefs",
+        chatStyle: state.chatStyle, avatarMode: state.avatarMode, avatars: state.avatars,
+        palette: state.palette, meBubble: state.meBubble, himBubble: state.himBubble, chatFont: state.chatFont, himName: state.himName, voiceText: state.voiceText }, location.origin);
+    } catch (e) {}
+  }
+
+  /* 换一张:裁成正方形、缩到 256px、压成 JPEG 再传(原图动辄几 MB,头像用不着) */
+  var avFile = document.getElementById("avFile"), avHint = document.getElementById("avHint");
+  var avWho = "";
+  function avSay(t) { avHint.textContent = t; }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-avpick]"), function (b) {
+    b.addEventListener("click", function () { avWho = b.getAttribute("data-avpick"); avFile.value = ""; avFile.click(); });
+  });
+  avFile.addEventListener("change", function () {
+    var f = avFile.files && avFile.files[0];
+    if (!f || !avWho) return;
+    var who = avWho, url = URL.createObjectURL(f), img = new Image();
+    avSay("正在处理…");
+    img.onload = function () {
+      try {
+        var S = 256, side = Math.min(img.naturalWidth, img.naturalHeight);
+        var c = document.createElement("canvas"); c.width = S; c.height = S;
+        c.getContext("2d").drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, S, S);
+        var data = c.toDataURL("image/jpeg", 0.86);
+        URL.revokeObjectURL(url);
+        fetch("api/avatar/" + who, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ dataUrl: data }) })
+          .then(function (r) { return r.json().catch(function () { return { ok: false, why: "HTTP " + r.status }; }); })
+          .then(function (d) {
+            if (!d.ok) { avSay("没换成:" + (d.why || "服务器没收")); return; }
+            state.avatars[who] = d.ver; save(state); apply();
+            avSay(d.persisted ? "换好了,存在服务器上" : "换好了 —— 但服务器这会儿没开落盘,重启会丢");
+          })
+          .catch(function () { avSay("没换成:连不上服务器"); });
+      } catch (e) { avSay("没换成:这张图读不了"); }
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); avSay("没换成:这张图读不了(试试 JPG / PNG)"); };
+    img.src = url;
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-avreset]"), function (b) {
+    b.addEventListener("click", function () {
+      var who = b.getAttribute("data-avreset");
+      if (!state.avatars[who]) { avSay("现在就是默认的"); return; }
+      if (!confirm("把" + (who === "me" ? "你" : "他") + "的头像换回默认?换上去的那张会删掉。")) return;
+      fetch("api/avatar/" + who, { method: "DELETE" })
+        .then(function (r) { return r.json(); })
+        .then(function (d) { if (d.ok) { state.avatars[who] = null; save(state); apply(); avSay("已换回默认"); } })
+        .catch(function () { avSay("没换成:连不上服务器"); });
+    });
+  });
+
+  /* ---------- 聊天外观:皮肤配色 + 气泡颜色 + 壁纸(2026-10-09) ----------
+     聊天页是另一个文档,读不到这里的 CSS 变量,所以把当前皮肤算出来的几种颜色存进 state.palette
+     (它和本页同源,读得到 localStorage)并随 postMessage 递过去。深浅按底色亮度判断,
+     所以「雾山」这种本身就深的皮肤,聊天页也会切成深色玻璃。 */
+  function readPalette() {
+    var cs = getComputedStyle(document.documentElement), g = function (n) { return cs.getPropertyValue(n).trim(); };
+    var top = g("--paper-top"), card = g("--card");
+    return { top: top, bot: g("--paper-bot"), card: card, ink: g("--ink"), ink2: g("--ink-2"), dim: g("--dim"), line: g("--line"),
+             dark: lum(top) < 0.42, want: wantDark() };
+  }
+  /* 「外观」开关本身要深还是浅(2026-10-20 她:「我设了深色网页没变」)。皮肤的 dark 是按底色算的 —— 只有象牙纸张跟昼夜,
+     其余五款永远浅;仿 iMessage 的颜色不吃皮肤,所以它只认这个(chat.html applyLook 里 imsg 那段)。 */
+  function wantDark() {
+    if (state.appearance === "dark") return true;
+    if (state.appearance === "light") return false;
+    try { return matchMedia("(prefers-color-scheme: dark)").matches; } catch (e) { return false; }
+  }
+  /* ~~状态栏那条跟聊天页顶色:打开聊天页前把 .topcap 涂成聊天页顶色(paintChatTop,2026-10-20 #46)~~ —— **同夜撤,别再加回来**:
+     iOS 只在打开 App 时取状态栏色(手册《「他」页照片铺到状态栏底下》开头,三次真机证实),涂了它不认;
+     反而聊天页顶栏渐隐(--im-top)和「他」页照片顶(--pc-top)都是读 .topcap 的色来接状态栏的,涂黑之后从黑起步,她真机上出了一刀分层。 */
+  function lum(hex) {                    // #rrggbb → 0..1 相对亮度(够判断深浅就行)
+    var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || "").trim());
+    if (!m) return 1;
+    var c = [m[1], m[2], m[3]].map(function (x) { x = parseInt(x, 16) / 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  }
+  var ME_COLORS  = ["#1b191d", "#3a3f4b", "#5b5466", "#7a6556", "#4f6358", "#c9b9ab"];
+  var HIM_COLORS = ["#ffffff", "#f3eee6", "#e9eef3", "#f1e7ea", "#e8ede6", "#2b2a2e"];
+  function buildDots(boxId, key, list) {
+    var box = document.getElementById(boxId); if (!box) return;
+    box.innerHTML = "";
+    var def = document.createElement("button"); def.type = "button"; def.className = "dot def"; def.title = "跟皮肤走"; def.dataset.c = "";
+    box.appendChild(def);
+    list.forEach(function (c) { var b = document.createElement("button"); b.type = "button"; b.className = "dot"; b.style.background = c; b.title = c; b.dataset.c = c; box.appendChild(b); });
+    var cu = document.createElement("label"); cu.className = "dot custom"; cu.title = "自己调";
+    var inp = document.createElement("input"); inp.type = "color"; cu.appendChild(inp); box.appendChild(cu);
+    box.addEventListener("click", function (e) {
+      var b = e.target.closest("button.dot"); if (!b) return;
+      state[key] = b.dataset.c; save(state); apply(); pushPrefs();
+    });
+    inp.addEventListener("change", function () { state[key] = inp.value.toLowerCase(); save(state); apply(); pushPrefs(); });
+  }
+  buildDots("meDots", "meBubble", ME_COLORS);
+  buildDots("himDots", "himBubble", HIM_COLORS);
+  function paintChatLook() {
+    [["meDots", "meBubble", ME_COLORS], ["himDots", "himBubble", HIM_COLORS]].forEach(function (x) {
+      var box = document.getElementById(x[0]); if (!box) return;
+      var cur = state[x[1]] || "", hit = false;
+      Array.prototype.forEach.call(box.querySelectorAll("button.dot"), function (b) {
+        var on = b.dataset.c === cur; if (on) hit = true; b.setAttribute("aria-pressed", String(on)); });
+      var cu = box.querySelector(".dot.custom");
+      cu.setAttribute("aria-pressed", String(!hit && !!cur));
+      if (!hit && cur) cu.style.background = cur; else cu.style.background = "";
+    });
+    var th = document.getElementById("wallThumb"), u = avatarUrl("wall");
+    if (th) th.style.backgroundImage = u ? "url(" + JSON.stringify(u).slice(1, -1) + ")" : "";
+    var wh = document.getElementById("wallHint"); if (wh) wh.textContent = u ? "已换上,聊天页铺满显示" : "没设就跟皮肤的底色走";
+  }
+  /* 壁纸:长边压到 1600px 的 JPEG 再传(原图动辄几 MB);「去掉」带确认,只有她点才删 */
+  (function () {
+    var wf = document.getElementById("wallFile"), wh = document.getElementById("wallHint");
+    if (!wf) return;
+    document.getElementById("wallPick").addEventListener("click", function () { wf.value = ""; wf.click(); });
+    wf.addEventListener("change", function () {
+      var f = wf.files && wf.files[0]; if (!f) return;
+      var url = URL.createObjectURL(f), img = new Image();
+      wh.textContent = "正在处理…";
+      img.onload = function () {
+        try {
+          var k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+          var c = document.createElement("canvas"); c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+          c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+          var data = c.toDataURL("image/jpeg", 0.82); URL.revokeObjectURL(url);
+          fetch("api/avatar/wall", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ dataUrl: data }) })
+            .then(function (r) { return r.json().catch(function () { return { ok: false, why: "HTTP " + r.status }; }); })
+            .then(function (d) {
+              if (!d.ok) { wh.textContent = "没换成:" + (d.why || "服务器没收"); return; }
+              state.avatars.wall = d.ver; save(state); apply();
+            }).catch(function () { wh.textContent = "没换成:连不上服务器"; });
+        } catch (e) { wh.textContent = "没换成:这张图读不了"; }
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); wh.textContent = "没换成:这张图读不了"; };
+      img.src = url;
+    });
+    document.getElementById("wallReset").addEventListener("click", function () {
+      if (!state.avatars.wall) return;
+      if (!confirm("去掉聊天壁纸?换上去的那张会删掉,聊天页回到皮肤的底色。")) return;
+      fetch("api/avatar/wall", { method: "DELETE" }).then(function (r) { return r.json(); })
+        .then(function (d) { if (d.ok) { state.avatars.wall = null; save(state); apply(); } }).catch(function () {});
+    });
+  })();
+
+  /* ---------- 应用 ---------- */
+  function himName() { return (state.himName || "").trim() || "Claude"; }
+  function paintName() {
+    var n = himName();
+    Array.prototype.forEach.call(document.querySelectorAll("[data-himname]"), function (el) { if (el.textContent !== n) el.textContent = n; });
+    var row = document.querySelector('.crow[data-chat="chat.html"]'); if (row) row.dataset.who = n;
+    var inp = document.getElementById("himName");
+    if (inp && document.activeElement !== inp) inp.value = state.himName || "";
+  }
+  function apply() {
+    paintName();
+    var root = document.documentElement;
+    root.setAttribute("data-skin", state.skin);
+    if (state.appearance === "system") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", state.appearance);
+    root.style.setProperty("--card-a", (state.opacity / 100).toFixed(3));
+    paintAvatar(avatarUrl("him"));
+    paintMe();
+    state.palette = readPalette();      // 皮肤的配色交给聊天页(TG 版跟它走,各页统一)
+    save(state);
+    paintChatLook();
+    tellChat();
+
+    Array.prototype.forEach.call(skinBox.children, function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.skin === state.skin));
+    });
+    ["chatStyle", "avatarMode", "appearance", "chatFont", "voiceText"].forEach(function (id) {
+      var key = id;
+      Array.prototype.forEach.call(document.getElementById(id).children, function (b) {
+        b.setAttribute("aria-pressed", String(b.dataset.v === state[key]));
+      });
+    });
+    op.value = String(state.opacity);
+    op.style.setProperty("--fill", ((state.opacity - 40) / 60 * 100).toFixed(1) + "%");
+    opVal.textContent = state.opacity + "%";
+    syncThemeColor();
+    renderSpec();
+  }
+
+  /* ---------- 状态栏那一条 ----------
+     从主屏打开时,刘海两侧那条(和安卓的状态栏)由系统按 theme-color 填。
+     写死成象牙色的话,换到雾山/墨白就会露出一道颜色不对的横带 ——
+     所以每次换皮肤都把它同步成当前的 --paper-top,接缝就没了。
+     ⚠️ head 里那两条带 media 的是**没有 JS 时的兜底**,这里把它们一起改掉,
+     免得系统深浅色和她手选的皮肤打架。 */
+  /* ⚠️ 跟随系统时,系统深浅色一变 --paper-top 就变了,但 meta 不会自己跟 ——
+     于是状态栏那一条会卡在旧色上,正是这个函数要防的事。所以挂个监听。 */
+  (function () {
+    try {
+      var mq = matchMedia("(prefers-color-scheme: dark)");
+      if (mq.addEventListener) mq.addEventListener("change", function () { syncThemeColor(); apply(); });
+      else if (mq.addListener) mq.addListener(function () { syncThemeColor(); apply(); });
+    } catch (e) {}
+  })();
+  function syncThemeColor() {
+    try {
+      var c = getComputedStyle(document.documentElement).getPropertyValue("--paper-top").trim();
+      if (!c) return;
+      var metas = document.querySelectorAll('meta[name="theme-color"]');
+      Array.prototype.forEach.call(metas, function (m) { m.setAttribute("content", c); });
+    } catch (e) {}
+  }
+
+  /* ---------- 这套数 ----------
+     ⚠️ **全部现读现算,一个都不写死。**
+     上一版这张表是手抄的,抄完 CSS 改了它不会跟着改,于是表里写 20px、代码里是 18px。
+     她拿这张表当备份,备份说谎比没有备份更坏 —— 所以改成从 CSS 变量和真实元素上读。 */
+  function tok(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "—";
+  }
+  function px(sel, prop) {            /* 量真实元素某个属性的计算值 */
+    var el = document.querySelector(sel);
+    return el ? getComputedStyle(el)[prop] : "—";
+  }
+  function fs(sel) {                        /* 量某个真实元素最终渲染出来的字号/字重 */
+    var el = document.querySelector(sel);
+    if (!el) return "—";
+    var c = getComputedStyle(el);
+    return Math.round(parseFloat(c.fontSize) * 10) / 10 + "px / " + c.fontWeight;
+  }
+  function specRows() {
+    return [
+      /* ⚠️ 不能用 tok("--gutter"):它的值是 clamp(14px,4.6vw,18px),
+         自定义属性只在计算值阶段替换 var(),clamp 不会被算出来,印出去就是那行表达式本身。
+         而这恰恰是全表唯一一个**逐设备不同**的数,印错等于备份说谎。改成量真实元素。 */
+      ["页面左右留白", px(".phone", "paddingLeft")],
+      ["卡片间距(横=纵)", tok("--gap")],
+      ["卡片圆角", tok("--r-card")],
+      ["卡片内留白", tok("--pad") + "(深色卡 " + tok("--pad-deep") + ")"],
+      ["间距阶梯", "4 / 8 / 12 / 16 / 20 / 24 / 32"],
+      ["分隔线", tok("--hair")],
+      ["会话行高 / 头像", tok("--row") + " / " + tok("--av")],
+      ["— 字阶(这台设备实际渲染) —", ""],
+      ["问候 Good evening", fs(".greet")],
+      ["Day 数字", fs(".display")],
+      ["页标题 Chats/Settings", fs(".title")],
+      ["Monthly Anniversary", fs(".headline")],
+      ["大数字 580 / 114", fs(".metric .big")],
+      ["卡片小标签 Us/Steps", fs(".label")],
+      ["悄悄话正文", fs(".whisper .body")],
+      /* ⚠️ 选择器要挑对:.tabbar button 命中的是选中态那颗(700),
+         .caption 命中的是文档里第一个 —— 也就是被覆写成 12.5px 衬线的「Jan 6」。 */
+      ["Tab 标签(未选)", fs('.tabbar button[aria-selected="false"]')],
+      ["正文 / 说明", fs("body") + " · " + fs("#tab-chats .caption")],
+      ["底部条", tok("--tabbar-h") + " + 安全区"],
+      ["— 动画 —", ""],
+      ["入场时长 / 错位", tok("--dur-reveal") + " / " + tok("--stagger") + " 一级"],
+      /* ⚠️ 别把 linear() 原文印进来:那串三百多个字符,而这一列是 nowrap 的,
+         印了整页就横向溢出。印它的来历更有用,也更短。 */
+      ["缓动", tok("--spring").indexOf("linear(") === 0
+                 ? "弹簧 response .46 / damping .86" : "弹簧(退回 cubic-bezier)"],
+      ["减弱动态效果", matchMedia("(prefers-reduced-motion: reduce)").matches ? "系统已开启(只淡入)" : "未开启"]
+      /* 安全区不在这里印:--sat/--sab 的值是 env(...) 表达式,同 --gutter 那条。
+         下面 live 那组里的「顶/底安全区」是 safeArea() 量出来的真值,那条才作数。 */
+    ];
+  }
+  function safeArea() {
+    try {
+      var d = document.createElement("div");
+      d.style.cssText = "position:fixed;top:0;left:0;height:0;" +
+        "padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)";
+      document.body.appendChild(d);
+      var c = getComputedStyle(d), v = c.paddingTop + " / " + c.paddingBottom;
+      d.remove();
+      return v;
+    } catch (e) { return "读不到"; }
+  }
+  var specBox = document.getElementById("spec");
+  var specText = document.getElementById("specText");
+  function renderSpec() {
+    var cs = getComputedStyle(document.documentElement);
+    var live = [
+      ["当前皮肤", (SKINS.filter(function (s) { return s.id === state.skin; })[0] || {}).name],
+      ["外观", { system: "跟随系统", light: "浅色", dark: "夜间" }[state.appearance]],
+      ["聊天样式", state.chatStyle === "tg" ? "Telegram" : state.chatStyle === "imsg" ? "iMessage" : "官端"],
+      ["卡片透明度", state.opacity + "%"],
+      ["页面底(上)", cs.getPropertyValue("--paper-top").trim()],
+      ["页面底(下)", cs.getPropertyValue("--paper-bot").trim()],
+      ["卡片底", cs.getPropertyValue("--card").trim()],
+      ["主文字", cs.getPropertyValue("--ink").trim()],
+      ["次级文字", cs.getPropertyValue("--dim").trim()],
+      ["分隔线色", cs.getPropertyValue("--line").trim()],
+      ["深色卡", cs.getPropertyValue("--deep").trim()],
+      ["菊花 / 心率", cs.getPropertyValue("--spark").trim()],
+      ["— 这台设备 —", ""],
+      ["视口宽度(CSS px)", String(window.innerWidth)],
+      ["视口高度(CSS px)", String(window.innerHeight)],
+      ["devicePixelRatio", String(window.devicePixelRatio || 1)],
+      ["对参考图 402 的比例", ((window.innerWidth / 402) * 100).toFixed(1) + "%"],
+      ["顶/底安全区", safeArea()]
+    ];
+    var all = specRows().concat([["— 当前这一套 —", ""]]).concat(live);
+    specBox.innerHTML = all.map(function (r) {
+      return '<div><span class="k">' + r[0] + '</span><span class="v">' + r[1] + "</span></div>";
+    }).join("");
+    specText.value = all.map(function (r) { return r[0] + "\t" + r[1]; }).join("\n");
+  }
+  document.getElementById("copySpec").addEventListener("click", function () {
+    var btn = this;
+    specText.select();
+    function done() { btn.textContent = "复制好了"; setTimeout(function () { btn.textContent = "复制这套数"; }, 1600); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(specText.value).then(done, function () { done(); });
+    } else { done(); }
+  });
+
+  /* ---------- 三栏 ---------- */
+  var tabs = document.querySelectorAll(".tabbar button");
+  document.getElementById("tabPlus").addEventListener("click", function () {
+    var d = document.querySelector('.tabbar [data-tab="diary"]'); if (d) d.click();
+  });
+  Array.prototype.forEach.call(tabs, function (t) {
+    t.addEventListener("click", function () {
+      Array.prototype.forEach.call(tabs, function (o) {
+        var on = o === t;
+        o.setAttribute("aria-selected", String(on));
+        document.getElementById(o.getAttribute("aria-controls")).hidden = !on;
+      });
+      window.scrollTo({ top: 0, behavior: "auto" });
+    });
+  });
+
+  /* ---------- 点一行,把聊天页推进来 ----------
+     iframe **只在第一次点的时候才装载**,而且返回时不清空 src ——
+     清空等于每次返回都重来一遍(丢掉正在流的那句、丢掉滚动位置)。 */
+  var chatview = document.getElementById("chatview");
+  var chatframe = document.getElementById("chatframe");
+  var chatNone = document.getElementById("chatNone");
+  var chatWho = document.getElementById("chatWho");
+  var tabbar = document.querySelector(".tabbar");
+  var loaded = "";
+  Array.prototype.forEach.call(document.querySelectorAll(".crow[data-chat]"), function (row) {
+    row.addEventListener("click", function () {
+      var src = row.dataset.chat;
+      chatWho.textContent = row.dataset.who || "";
+      if (src) {
+        if (loaded !== src) { chatframe.src = src; loaded = src; }
+        chatframe.hidden = false; chatNone.hidden = true; chatbar.hidden = true;
+        syncBg();
+      } else {
+        chatframe.hidden = true; chatNone.hidden = false; chatbar.hidden = false;
+        chatview.style.background = "";
+      }
+      chatview.hidden = false;
+      pushTo(0, 1, function () { tabbar.hidden = true; });
+    });
+  });
+  function goBack() {
+    if (window.__dwTopTint) window.__dwTopTint(null);   // 「他」页涂过的状态栏那条,返回 Chats 时还原
+    tabbar.hidden = false;
+    loadLast();
+    pushTo(1, null, function () { chatview.hidden = true; });
+  }
+
+  /* ---------- iOS 的推入 / 推出 + 左边缘拖着返回(2026-10-10 第三轮,所有者「页面动画按 iOS App 的质感」)----------
+     p = 聊天页的位置:0 = 盖满屏、1 = 推到右边屏外。下面那页(首页 + 底栏)跟着往左让 30%、压暗 10%(UINavigationController 那套)。
+     曲线是临界阻尼弹簧(UIKit .smooth,response .5s),CSS linear() 写成逐点;不认的系统退回原来那条 cubic-bezier。
+     **只动 transform / opacity**(合成线程画,ProMotion 上跑 120Hz)。动画放完就撤,不留 transform(否则 fixed 的东西会跟着错位)。
+     拖动:聊天页在 iframe 里,手指在它身上,所以由 chat.html 认出「从左边缘往右拖」再调 window.__dwSwipe 告诉这里。 */
+  var SPRING_OK = window.CSS && CSS.supports && CSS.supports("animation-timing-function", "linear(0, 1)");
+  var PUSH_EASE = SPRING_OK ? "linear(0, 0.0671, 0.2058, 0.3592, 0.5008, 0.6207, 0.7171, 0.792, 0.8488, 0.8911, 0.9222, 0.9447, 0.961, 0.9726, 0.9808, 0.9866, 0.9907, 0.9936, 0.9956, 0.9969, 0.9979, 0.9986, 1)"
+                            : "cubic-bezier(.32, .72, 0, 1)";
+  var PUSH_MS = 560;
+  var reduceMotion = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var phoneEl = document.querySelector("main.phone");
+  var pushDim = document.createElement("div");
+  pushDim.id = "pushdim"; pushDim.hidden = true; document.body.appendChild(pushDim);
+  var pushRun = null;
+  function tx(x) { return "translate3d(" + x + "px,0,0)"; }
+  function underX(p) { return -(1 - p) * innerWidth * 0.3; }
+  function pushStop() {
+    if (!pushRun) return;
+    var r = pushRun; pushRun = null;
+    r.anims.forEach(function (a) { try { a.cancel(); } catch (e) {} });
+  }
+  function pushClean() {
+    chatview.classList.remove("pushing"); pushDim.hidden = true;
+    [chatview, phoneEl, tabbar, pushDim].forEach(function (el) { if (el) { el.style.transform = ""; el.style.opacity = ""; } });
+  }
+  /* from 省略 = 从当前拖到的位置起 */
+  function pushTo(to, from, done) {
+    pushStop();
+    if (from == null) from = dragP;
+    dragP = to;
+    if (reduceMotion || !chatview.animate) { pushClean(); if (done) done(); return; }
+    var W = innerWidth, o = { duration: PUSH_MS, easing: PUSH_EASE, fill: "both" };
+    pushClean();          // 拖动时写的行内样式先撤掉,下面同一帧里动画接着从同一个位置起,看不出断
+    chatview.classList.add("pushing"); pushDim.hidden = false;
+    var anims = [chatview.animate([{ transform: tx(from * W) }, { transform: tx(to * W) }], o),
+                 pushDim.animate([{ opacity: (1 - from) * 0.1 }, { opacity: (1 - to) * 0.1 }], o)];
+    [phoneEl, tabbar].forEach(function (el) {
+      if (el && !el.hidden) anims.push(el.animate([{ transform: tx(underX(from)) }, { transform: tx(underX(to)) }], o));
+    });
+    var run = { anims: anims };
+    pushRun = run;
+    anims[0].onfinish = function () {
+      if (pushRun !== run) return;
+      pushRun = null;
+      anims.forEach(function (a) { try { a.cancel(); } catch (e) {} });
+      pushClean();
+      if (done) done();
+    };
+  }
+  var dragP = 0, drag = null;
+  window.__dwSwipe = function (phase, cx) {
+    if (chatview.hidden || reduceMotion) return false;
+    var W = innerWidth, now = performance.now();
+    if (phase === "start") {
+      pushStop();
+      tabbar.hidden = false;
+      drag = { cx0: cx, off: 0, t: now, v: 0 };
+      chatview.classList.add("pushing"); pushDim.hidden = false;
+      return true;
+    }
+    if (!drag) return false;
+    if (phase === "move") {
+      /* cx 是 iframe 里的坐标,iframe 跟着往右挪了 off,所以手指在屏幕上的位置 = cx + off */
+      var fx = cx + drag.off, nOff = Math.max(0, Math.min(W, fx - drag.cx0));
+      var dt = Math.max(1, now - drag.t);
+      drag.v = 0.7 * ((nOff - drag.off) / dt) + 0.3 * drag.v;
+      drag.off = nOff; drag.t = now;
+      var p = nOff / W; dragP = p;
+      chatview.style.transform = tx(nOff);
+      phoneEl.style.transform = tabbar.style.transform = tx(underX(p));
+      pushDim.style.opacity = String((1 - p) * 0.1);
+      return true;
+    }
+    /* end:拖过三分之一、或者往右甩得够快,就返回;否则弹回去 */
+    var close = dragP > 0.35 || drag.v > 0.45;
+    drag = null;
+    if (close) { loadLast(); pushTo(1, null, function () { chatview.hidden = true; }); }
+    else pushTo(0, null, function () { tabbar.hidden = true; });
+    return true;
+  };
+
+  /* ---------- Chats 里「Claude」那一行:最后一句 + 时间,实时取(2026-10-10) ----------
+     ~~原来那句「把你今天写的东西…」和 6:40 PM 是写死在网页里的~~(所有者:「chat 这个界面的字不是实时的」)。
+     现在读 /api/messages 的最后几条,挑最后一句她或他说的话(思考 / 工具不算)。
+     ⚠️ 只记得经过 dwell 的话:Telegram / iMessage 那边说的、他主动发的,这里看不到(dwell 手册已知边界 1)。
+     什么时候刷新:打开页面、点到 Chats、从聊天页返回、切回前台。读不到就留空,不编一句假的。 */
+  var yanPrev = document.getElementById("yanPrev");
+  var yanWhen = document.getElementById("yanWhen");
+  function whenText(sec) {
+    var d = new Date(sec * 1000), now = new Date();
+    var day0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    var t = d.getTime();
+    if (t >= day0) {                      /* 今天:6:40 PM */
+      var h = d.getHours(), m = d.getMinutes();
+      return ((h % 12) || 12) + ":" + (m < 10 ? "0" : "") + m + " " + (h < 12 ? "AM" : "PM");
+    }
+    if (t >= day0 - 86400000) return "Yesterday";
+    if (t >= day0 - 6 * 86400000) return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
+    return (d.getMonth() + 1) + "/" + d.getDate() + (d.getFullYear() === now.getFullYear() ? "" : "/" + String(d.getFullYear()).slice(2));
+  }
+  function prevText(m) {
+    var t = String(m.text || "")
+      .replace(/〔贴纸[：:][^〕]*〕/g, "[贴纸]").replace(/〔语音〕/g, "[语音]")
+      .replace(/\s+/g, " ").trim();
+    if (!t) t = "…";
+    return (m.kind === "me" ? "我: " : "") + t;
+  }
+  var lastBusy = false;
+  /* ---------- 首页天气(2026-10-10):读 dwell-bridge 的 /api/weather,样式同原来那行「阴 27° 28~34° · 降雨 76%,带伞」 ----------
+     打开页面、切回前台、之后每 15 分钟问一次(服务器那边 30 分钟才真去拉一次,这里问得勤只是读缓存)。 */
+  function loadWeather() {
+    var el = document.getElementById("homeWeather");
+    if (!el) return;
+    fetch("api/weather", { cache: "no-store" }).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      if (!d || !d.ok) { el.innerHTML = "&nbsp;"; return; }
+      el.textContent = "";
+      el.appendChild(document.createTextNode(d.desc + (d.temp != null ? " " + d.temp + "° " : " ")));
+      if (d.min != null && d.max != null) {
+        var soft = document.createElement("span"); soft.className = "soft"; soft.textContent = d.min + "~" + d.max + "°";
+        el.appendChild(soft);
+      }
+      el.appendChild(document.createTextNode(" · 降雨 " + d.rain + "%" + (d.umbrella ? ",带伞" : "")));
+    }).catch(function () {});
+  }
+  loadWeather();
+  setInterval(loadWeather, 15 * 60000);
+
+  /* 每日一首(2026-10-12):他每天挑的那首(dwell-bridge 的 /api/song;北京时间 DAILY_SONG_HOUR 点后由他挑)。
+     有就把悄悄话正文换成他写的那句、下面露出那一行;没开 / 还没挑过 = 什么都不动。
+     点那一行 = 打开网易云 App 那首歌(orpheus://);1.2 秒后页面还在前台(没装 App / 没跳走)就退回网页版。 */
+  var songNow = null;
+  function loadSong() {
+    fetch("api/song", { cache: "no-store" }).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      var row = document.getElementById("whisperSong"), body = document.getElementById("whisperBody");
+      if (!row || !d || !d.ok) return;
+      songNow = d;
+      if (d.note && body) body.textContent = d.note;
+      var img = row.querySelector(".cv");
+      if (d.cover) img.src = d.cover + "?param=120y120"; else img.removeAttribute("src");
+      row.querySelector("b").textContent = d.name || "";
+      row.querySelector("i").textContent = d.artist || "";
+      row.setAttribute("aria-label", "在网易云里听:" + (d.name || "") + (d.artist ? " - " + d.artist : ""));
+      row.hidden = false;
+      var more = row.parentNode && row.parentNode.querySelector(".more");
+      if (more) more.textContent = "Today's song";
+    }).catch(function () {});
+  }
+  (function () {
+    var row = document.getElementById("whisperSong");
+    if (row) row.addEventListener("click", function () {
+      if (!songNow) return;
+      var t = Date.now(), web = songNow.web;
+      location.href = songNow.app;
+      setTimeout(function () { if (!document.hidden && Date.now() - t < 2500) window.open(web, "_blank"); }, 1200);
+    });
+  })();
+  loadSong();
+  setInterval(loadSong, 30 * 60000);
+
+  /* ── 经期(2026-10-12)── 本层 /api/period 转 shim 的 /period(和Claude每句话前看到的是同一份)。算法照抄 shim 的 senses.mjs:
+     今天是第 N 天 = 今天 − 上次开始 + 1;经期中 = N ≤ 经期天数 + 2 且这次还没记结束;下次 = 上次开始 + 周期天数(20~45 夹住,缺省 30 / 6)。
+     读不到 / 没开 = 那一行藏着,不编。 */
+  var perData = null, perMonth = null;
+  function dnum(iso) { var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || ""); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 864e5 : null; }
+  function isoOf(n) { var d = new Date(n * 864e5); return d.getUTCFullYear() + "-" + ("0" + (d.getUTCMonth() + 1)).slice(-2) + "-" + ("0" + d.getUTCDate()).slice(-2); }
+  function todayNum() { var t = new Date(); return Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) / 864e5; }
+  var MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var MONL = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  function short(n) { var d = new Date(n * 864e5); return MON[d.getUTCMonth()] + " " + d.getUTCDate(); }
+  function perCalc(c) {
+    var start = dnum(c.last_period_start), end = dnum(c.last_period_end), today = todayNum();
+    var cycle = Math.max(20, Math.min(+c.cycle_days || 30, 45)), plen = +c.period_length || 6;
+    if (start == null) return null;
+    var day = today - start + 1, active = day >= 1 && day <= plen + 2 && !(end != null && end >= start);
+    var next = start + cycle; while (next + plen <= today) next += cycle;   // 记录旧了也往后推到下一个还没过去的
+    return { start: start, end: end, cycle: cycle, plen: plen, day: day, active: active, next: next, today: today };
+  }
+  function paintPerRow() {
+    var row = document.getElementById("perRow"), r = perData && perCalc(perData);
+    if (!row) return;
+    if (!r) { row.hidden = true; return; }
+    row.hidden = false;
+    var n = document.getElementById("perN");
+    if (r.active) {
+      setText("perT", "经期 · 第 " + r.day + " 天");
+      setText("perS", "预计 " + short(r.start + r.plen - 1) + " 结束");
+      n.innerHTML = "";
+    } else {
+      setText("perT", "经期");
+      setText("perS", "下次 · " + short(r.next));
+      var left = r.next - r.today;
+      n.innerHTML = left <= 0 ? '<span>今天</span>' : '<span>' + left + '</span><small>天后</small>';
+    }
+  }
+  function paintPerCal() {
+    var r = perData && perCalc(perData); if (!r) return;
+    var t = new Date(), y = perMonth ? perMonth[0] : t.getFullYear(), m = perMonth ? perMonth[1] : t.getMonth();
+    perMonth = [y, m];
+    setText("perMonth", MONL[m] + " " + y);
+    var first = Date.UTC(y, m, 1) / 864e5, lead = new Date(first * 864e5).getUTCDay(), days = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    var loggedEnd = r.end != null && r.end >= r.start ? r.end : (r.active ? Math.max(r.today, r.start) : r.start + r.plen - 1);
+    var html = "";
+    for (var i = 0; i < lead; i++) html += '<span class="out"><b>.</b></span>';
+    for (var d = 1; d <= days; d++) {
+      var n = first + d - 1, cls = [];
+      if (n >= r.start && n <= loggedEnd) cls.push("on");
+      else if (r.active && n > loggedEnd && n <= r.start + r.plen - 1) cls.push("guess", "dash");
+      else { for (var k = r.next; k <= n; k += r.cycle) if (n >= k && n <= k + r.plen - 1) { cls.push("guess", "dash"); break; } }
+      if (n === r.today) cls.push("today");
+      html += '<span class="' + cls.join(" ") + '"><b>' + d + '</b></span>';
+    }
+    document.getElementById("perGrid").innerHTML = html;
+    setText("perNote", "周期约 " + r.cycle + " 天");
+    document.getElementById("perStart").disabled = r.active;
+    document.getElementById("perEnd").disabled = !r.active;
+  }
+  function loadPeriod() {
+    fetch("api/period", { cache: "no-store" }).then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      perData = d && d.ok ? d.cfg : null; paintPerRow(); if (!document.getElementById("perSheet").hidden) paintPerCal();
+    }).catch(function () {});
+  }
+  (function () {
+    var sh = document.getElementById("perSheet"), panel = sh && sh.querySelector(".perpanel");
+    if (!sh) return;
+    function open() {
+      perMonth = null; paintPerCal(); sh.hidden = false;
+      if (!reduceMotion && panel.animate) {
+        panel.animate([{ transform: "translate3d(0,100%,0)" }, { transform: "none" }], { duration: PUSH_MS, easing: PUSH_EASE });
+        sh.querySelector(".perback").animate([{ opacity: 0 }, { opacity: 1 }], { duration: 240, easing: "ease-out" });
+      }
+    }
+    function close() {
+      if (reduceMotion || !panel.animate) { sh.hidden = true; return; }
+      var a = panel.animate([{ transform: "none" }, { transform: "translate3d(0,100%,0)" }], { duration: 320, easing: "cubic-bezier(.32,.72,0,1)", fill: "forwards" });
+      sh.querySelector(".perback").animate([{ opacity: 1 }, { opacity: 0 }], { duration: 240, fill: "forwards" });
+      a.onfinish = function () { sh.hidden = true; a.cancel(); sh.querySelector(".perback").getAnimations().forEach(function (x) { x.cancel(); }); };
+    }
+    document.getElementById("perRow").addEventListener("click", open);
+    document.getElementById("perBack").addEventListener("click", close);
+    document.getElementById("perPrev").addEventListener("click", function () { perMonth = [perMonth[1] ? perMonth[0] : perMonth[0] - 1, (perMonth[1] + 11) % 12]; paintPerCal(); });
+    document.getElementById("perNext").addEventListener("click", function () { perMonth = [perMonth[1] === 11 ? perMonth[0] + 1 : perMonth[0], (perMonth[1] + 1) % 12]; paintPerCal(); });
+    function mark(what) {
+      fetch("api/period/mark", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ what: what }) })
+        .then(function (r) { return r.ok ? r.json() : null; }).then(function (d) { if (d && d.ok) { perData = d.cfg; paintPerRow(); paintPerCal(); } })
+        .catch(function () {});
+    }
+    document.getElementById("perStart").addEventListener("click", function () { mark("start"); });
+    document.getElementById("perEnd").addEventListener("click", function () { mark("end"); });
+  })();
+  loadPeriod();
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) loadPeriod(); });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) loadSong(); });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) loadWeather(); });
+
+  function loadLast() {
+    if (lastBusy || !yanPrev) return;
+    lastBusy = true;
+    fetch("api/messages?limit=30", { credentials: "same-origin" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        var ms = (d && d.msgs) || [], last = null;
+        for (var i = ms.length - 1; i >= 0; i--) {
+          if (ms[i].kind === "me" || ms[i].kind === "gu") { last = ms[i]; break; }
+        }
+        yanPrev.textContent = last ? prevText(last) : "还没有说过话";
+        yanWhen.textContent = last && last.at ? whenText(last.at) : "";
+      })
+      .catch(function () {})
+      .then(function () { lastBusy = false; });
+  }
+  loadLast();
+  Array.prototype.forEach.call(tabs, function (t) {
+    if (t.getAttribute("aria-controls") === "tab-chats") t.addEventListener("click", loadLast);
+  });
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) loadLast(); });
+  document.getElementById("chatBack").addEventListener("click", goBack);
+
+  /* ---------- 只留一条顶栏(2026-10-09) ----------
+     聊天页同源,所以等它加载完,往它顶栏最左边放回一颗 #menuBtn 当返回键。
+     样式全用 chat.html 自己的(玻璃圆、深色版、按下变淡),这里只给一个箭头。
+     ⚠️ 只在 iframe 里才放:chat.html 单独打开时没有「返回」可言。
+     ⚠️ 已经有 #menuBtn 就不放第二颗(哪天 chat.html 自己加回来了,以它为准)。 */
+  var chatbar = document.getElementById("chatbar");
+  function mountBack() {
+    try {
+      var d = chatframe.contentDocument, head = d && d.querySelector("header");
+      if (!head || d.getElementById("menuBtn")) return;
+      var btn = d.createElement("button");
+      btn.id = "menuBtn"; btn.className = "iconbtn"; btn.title = "返回"; btn.setAttribute("aria-label", "返回 Chats");
+      btn.innerHTML = '<svg viewBox="0 0 9 15" width="9" height="15" fill="none" stroke="currentColor" stroke-width="1.9" ' +
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="margin-left:-2px"><path d="M7.8 1.2 1.6 7.5l6.2 6.3"/></svg>';
+      btn.addEventListener("click", goBack);
+      head.insertBefore(btn, head.firstChild);
+    } catch (e) {}
+  }
+  /* 安全区那一截(iframe 上面)涂成聊天页的底色。皮肤/深浅色在聊天页里切,所以每次打开都重读一遍,
+     再盯住它根节点的属性变化与系统深浅色变化。读不到就退回外壳自己的纸色。 */
+  function syncBg() {
+    try {
+      var d = chatframe.contentDocument;
+      var c = d && d.body && getComputedStyle(d.body).backgroundColor;
+      if (!c || c === "rgba(0, 0, 0, 0)" || c === "transparent") c = d && getComputedStyle(d.documentElement).backgroundColor;
+      chatview.style.background = (c && c !== "rgba(0, 0, 0, 0)" && c !== "transparent") ? c : "";
+    } catch (e) { chatview.style.background = ""; }
+  }
+  /* 把外壳的安全区递进聊天页(2026-10-10)。iOS 不把刘海 / Home 条高度传进 iframe,
+     首次绘制前那次由 chat.html 开头自己量;这里管加载后与转屏 / 改尺寸时再递一次。 */
+  function pushSafe() {
+    try {
+      var d = chatframe.contentDocument;
+      if (!d || !d.documentElement) return;
+      var p = document.createElement("div");
+      p.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none;" +
+        "padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)";
+      document.body.appendChild(p);
+      var c = getComputedStyle(p);
+      d.documentElement.style.setProperty("--dw-sat", c.paddingTop);
+      d.documentElement.style.setProperty("--dw-sab", kbOn ? "0px" : c.paddingBottom);   // 键盘开着时底部不留 Home 条那截(见下面 kbFit)
+      p.remove();
+    } catch (e) {}
+  }
+  window.addEventListener("resize", pushSafe);
+  /* ── 键盘(2026-10-12,所有者「iPhone 主屏运行时键盘、视口、安全区的跳动 / 遮挡 / 多余空白」)──
+     查实的病根:聊天页装在 iframe 里,**iOS 只把键盘告诉最外层**(这页的 visualViewport 会变矮、会被往上推),
+     iframe 里的 visualViewport 一动不动 —— 所以 chat.html 自己那段 fitKeyboard 在主屏 App 里一直算出「键盘没开」,
+     键盘全靠 iOS 自己把整页往上推:顶栏被推出屏幕、输入栏底下还留着 Home 条那截 34pt 的空白。
+     做法:键盘开着时,把 .chatview 摆成正好盖住「眼睛看得到的那块」(top = 被推上去的量、height = 可视高),
+     iframe 跟着变矮,聊天页在新尺寸里自己排:顶栏在上、输入栏贴着键盘(它那头怎么接着滑见 chat.html《交互流畅度》);
+     同时把 --dw-sab 递成 0、根节点打上 data-dwkb,输入栏底下不再留 Home 条的空。键盘走了全部还原。
+     只用 top / height,不碰 transform(推入 / 拖动返回的动画用的是 transform,两边不打架)。
+     外壳这页被 iOS 顺手滚动过的话,键盘收起时滚回原处(首页回来不跳)。 */
+  var kbOn = false, kbRaf = 0, homeY = 0;
+  /* 键盘 ⇄ 贴纸面板互换(2026-10-12,所有者发了 TG 三种状态的截图:「点输入框右侧的图标能丝滑切换到不同界面」)。
+     TG 的秘诀:面板和键盘一样高、就在键盘底下,换的时候输入框一动不动。聊天页那头要外壳配合两件事:
+     release():要换成面板了 —— 立刻把聊天页放回全高(键盘还没退,面板先垫在它底下),接下来 800ms 里键盘还「开着」的读数一律不理;
+     hold(ms):要换回键盘了 —— 键盘升上来那段先别缩小聊天页(面板还要露着,等键盘盖住它),到点再缩、聊天页同一帧收掉面板。
+     height():最近一次量到的键盘高(面板照它定高)。 */
+  var kbHoldUntil = 0, kbIgnoreUntil = 0, kbLastH = 0;
+  window.__dwKb = {
+    height: function () { return kbLastH; },
+    release: function () {
+      kbIgnoreUntil = Date.now() + 800; kbHoldUntil = 0;
+      if (kbOn) { kbOn = false; chatview.style.top = chatview.style.height = chatview.style.bottom = ""; kbTell(false); }
+      setTimeout(kbQueue, 820);
+    },
+    hold: function (ms) { kbHoldUntil = Date.now() + (ms || 0); kbIgnoreUntil = 0; setTimeout(kbQueue, (ms || 0) + 16); },
+  };
+  window.addEventListener("scroll", function () { if (chatview.hidden) homeY = window.scrollY; }, { passive: true });
+  function kbTell(on) {
+    try {
+      var d = chatframe.contentDocument;
+      if (d && d.documentElement) d.documentElement.toggleAttribute("data-dwkb", on);
+    } catch (e) {}
+    pushSafe();
+  }
+  function kbFit() {
+    kbRaf = 0;
+    var vv = window.visualViewport;
+    var kb = vv ? innerHeight - vv.height : 0;
+    var on = !!vv && !chatview.hidden && kb > 80 && Math.abs((vv.scale || 1) - 1) < 0.01;
+    if (on) kbLastH = Math.round(kb);
+    if (on && Date.now() < kbIgnoreUntil) return;      // 刚 release:键盘正在退,别又缩回去
+    if (on && Date.now() < kbHoldUntil) return;        // hold 中:到点由 hold 排的那次再来
+    if (on) {
+      chatview.style.top = Math.max(0, vv.offsetTop) + "px";
+      chatview.style.height = vv.height + "px";
+      chatview.style.bottom = "auto";
+      if (!kbOn) { kbOn = true; kbTell(true); }
+    } else if (kbOn) {
+      kbOn = false;
+      chatview.style.top = chatview.style.height = chatview.style.bottom = "";
+      kbTell(false);
+      if (window.scrollY !== homeY) window.scrollTo(0, homeY);
+    }
+  }
+  function kbQueue() { if (!kbRaf) kbRaf = requestAnimationFrame(kbFit); }
+  if (window.visualViewport) {
+    visualViewport.addEventListener("resize", kbQueue);
+    visualViewport.addEventListener("scroll", kbQueue);
+  }
+  chatframe.addEventListener("load", function () {
+    pushSafe(); mountBack(); syncBg();
+    try {
+      /* 2026-10-16 帧率:聊天页根节点的属性一帧里会变好几次(忙 / 键盘 / 安全区),每次都 getComputedStyle 逼它重算样式;并到下一帧做一次 */
+      var bgRaf = 0;
+      new MutationObserver(function () {
+        if (!bgRaf) bgRaf = requestAnimationFrame(function () { bgRaf = 0; syncBg(); });
+      }).observe(chatframe.contentDocument.documentElement, { attributes: true });
+    } catch (e) {}
+  });
+  try {
+    var dmq = window.matchMedia("(prefers-color-scheme: dark)");
+    var onScheme = function () { setTimeout(syncBg, 50); };
+    if (dmq.addEventListener) dmq.addEventListener("change", onScheme); else if (dmq.addListener) dmq.addListener(onScheme);
+  } catch (e) {}
+
+  /* ---------- 设置开合 ---------- */
+  var sheet = document.getElementById("settings");
+  /* 2026-10-10 第三轮:iOS 模态 —— 从底下整页推上来,点「完成」滑下去。曲线同聊天页推入(PUSH_EASE,临界阻尼弹簧)。
+     ~~sheet.hidden = false / true 直接开关 + 上浮 18px 淡入~~。系统开「减弱动态效果」照旧直接开关。 */
+  var sheetRun = null;
+  function sheetMove(open) {
+    if (sheetRun) { try { sheetRun.cancel(); } catch (e) {} sheetRun = null; }
+    if (open) { sheet.hidden = false; segAll(); }
+    if (reduceMotion || !sheet.animate) { sheet.hidden = !open; return; }
+    sheet.classList.add("ios-in");
+    var y = innerHeight;
+    var a = sheet.animate([{ transform: "translate3d(0," + (open ? y : 0) + "px,0)" }, { transform: "translate3d(0," + (open ? 0 : y) + "px,0)" }],
+                          { duration: PUSH_MS, easing: PUSH_EASE, fill: "both" });
+    sheetRun = a;
+    a.onfinish = function () {
+      if (sheetRun !== a) return;
+      sheetRun = null; a.cancel();
+      if (!open) sheet.hidden = true;
+    };
+  }
+  document.getElementById("openSettings").addEventListener("click", function () { sheetMove(true); });
+  document.getElementById("closeSettings").addEventListener("click", function () { sheetMove(false); });
+
+  /* iOS 分段控件的白滑块:每个 .seg 里放一块 .segthumb,按 aria-pressed 那颗的位置挪(transform,不动布局)。
+     谁改了 aria-pressed(点选、从服务器读回设置)都会跟着走 —— 盯的是属性,不用改原来那几处逻辑。
+     深色(卡片底暗)时滑块换成亮一档的灰,iOS 深色也是这样。 */
+  function segPlace(seg) {
+    var on = seg.querySelector('button[aria-pressed="true"]'), th = seg.querySelector(".segthumb");
+    if (!th) { th = document.createElement("span"); th.className = "segthumb"; th.setAttribute("aria-hidden", "true"); seg.insertBefore(th, seg.firstChild); }
+    if (!on || !on.offsetWidth) { seg.removeAttribute("data-on"); return; }
+    seg.setAttribute("data-on", "");
+    th.style.width = on.offsetWidth + "px";
+    th.style.transform = "translate3d(" + (on.offsetLeft - 2) + "px,0,0)";
+    /* 深不深看字色(字是浅的 = 深色皮肤);卡片底是 color-mix 出来的,有的浏览器报成 color(srgb …) 不好解析 */
+    try {
+      var c = getComputedStyle(on).color, m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(c), k = 1;
+      if (!m) { m = /color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)/.exec(c); k = 255; }
+      seg.classList.toggle("dk", !!m && (0.299 * m[1] + 0.587 * m[2] + 0.114 * m[3]) * k > 140);
+    } catch (e) {}
+  }
+  function segAll() { Array.prototype.forEach.call(document.querySelectorAll(".stack.ios .seg"), segPlace); }
+  Array.prototype.forEach.call(document.querySelectorAll(".stack.ios .seg"), function (seg) {
+    new MutationObserver(function () { segPlace(seg); }).observe(seg, { attributes: true, subtree: true, attributeFilter: ["aria-pressed"] });
+  });
+  window.addEventListener("resize", segAll);
+  /* 「设计参数」展开 / 收起 —— 只是藏起来,内容照常每次生成,复制照旧能用 */
+  (function () {
+    var tg = document.getElementById("specToggle"), body = document.getElementById("specBody");
+    if (!tg || !body) return;
+    tg.addEventListener("click", function () {
+      var open = body.hidden;
+      body.hidden = !open; tg.setAttribute("aria-expanded", String(open));
+    });
+  })();
+
+  /* 设置页两层(2026-10-19 深夜):第一层列表 ⇄ 二级页。每次打开设置都回到第一层;第一层右边的灰字从各控件的现状读(不另存一份) */
+  var spTitle = document.getElementById("sTitle"), spBack = document.getElementById("sBack");
+  function spSum() {
+    var on = function (id) { var b = document.querySelector("#" + id + ' button[aria-pressed="true"]'); return b ? b.textContent.trim() : ""; };
+    var put = function (k, html) { var el = sheet.querySelector('[data-sum="' + k + '"]'); if (el && el.innerHTML !== html) el.innerHTML = html; };
+    var sk = document.querySelector('#skins .skin[aria-pressed="true"]');
+    if (sk) {
+      var sw = sk.querySelector(".swatch"), nm = sk.querySelector(".nm");
+      put("skin", '<i class="sdot" style="background:' + (sw ? sw.style.background : "") + '"></i>' + (nm ? nm.textContent : ""));
+    }
+    put("mode", on("appearance"));
+    var ov = document.getElementById("opacityVal"); put("card", ov ? ov.textContent : "");
+    put("style", on("chatStyle")); put("font", on("chatFont")); put("avpos", on("avatarMode")); put("voice", on("voiceText"));
+    var fb = document.querySelector('#chatFont button[aria-pressed="true"]'), fp = document.getElementById("fontPrev");
+    if (fp) fp.style.setProperty("--fp", ((fb && fb.dataset.v) || "14.5") + "px");
+  }
+  function spGo(id, how) {
+    var to = sheet.querySelector('.spage[data-sp="' + id + '"]');
+    if (!to) return;
+    Array.prototype.forEach.call(sheet.querySelectorAll(".spage"), function (pg) { if (pg !== to) pg.hidden = true; pg.classList.remove("fwd", "back"); });
+    to.hidden = false;
+    sheet.setAttribute("data-sp", id);
+    var root = id === "root";
+    spBack.hidden = root; spTitle.hidden = root; spTitle.textContent = root ? "" : (to.dataset.title || "");
+    spSum(); segAll();
+    sheet.scrollTop = 0;
+    if (how && !reduceMotion) { void to.offsetWidth; to.classList.add(how); }
+  }
+  sheet.addEventListener("click", function (e) {
+    var b = e.target.closest(".srow.nav[data-go]");
+    if (b) spGo(b.dataset.go, "fwd");
+  });
+  spBack.addEventListener("click", function () { spGo("root", "back"); });
+  document.getElementById("openSettings").addEventListener("click", function () { spGo("root"); });
+  /* 字号页:点一档,预览泡当场跟着变 */
+  document.getElementById("chatFont").addEventListener("click", function () { setTimeout(spSum, 0); });
+  spGo("root");
+
+  apply();
+  pullPrefs();
+  /* 「他」那一页(聊天页里)直接换了他的头像 / 名字(2026-10-10)—— 存服务器之后叫一声,这里重新拉一遍,
+     首页 / Chats / 设置跟着变(pullPrefs → apply → tellChat 再递回聊天页,两边一致)。同 __dwSwipe 的接法。 */
+  window.__dwPrefsChanged = function () { pullPrefs(); };
+  /* 「他」页打开时,状态栏那条涂成照片最上沿的颜色(2026-10-12 深夜,她在三种里选了「涂成照片色、过渡长一点」)。
+     ⚠️ iOS 26 只在顶上有固定层**出现 / 消失**时才重新取状态栏色,光改颜色不认(她真机测:换皮肤要关掉设置页才变色)。
+     所以:涂色 → 把 .topcap 抬到聊天页(80)之上 → 让它消失一帧再出现(两次 rAF),逼 iOS 重取;还原(null)时同样走一遍。
+     抬上来那条在她手机上 12px 高、颜色 = 照片顶色,照片顶上本来就从这个色化开,看不出来(返回键因此在换过背景时下移到 16px)。
+     ~~black-translucent + __dwHimTop~~ 第三十二次试过、iOS 在屏顶盖毛玻璃,第三十三次已改回 default。 */
+  var topcapEl = document.querySelector(".topcap");
+  window.__dwTopTint = function (c) {
+    if (!topcapEl) return;
+    var ok = c && /^rgb\(\d{1,3},\d{1,3},\d{1,3}\)$/.test(c);
+    topcapEl.style.background = ok ? c : "";
+    topcapEl.style.zIndex = ok ? "85" : "";               // 聊天页 80 之上、设置 90 之下
+    topcapEl.style.display = "none";                      // 消失一帧再出现 = iOS 重新取状态栏的色
+    requestAnimationFrame(function () { requestAnimationFrame(function () { topcapEl.style.display = ""; }); });
+  };
+
+
+  /* ── 部署完自己刷新 ──
+     这条契约是从旧 index.html 继承来的(它叫 tryReload):读后端 /api/health 的 ver,
+     变了就重载。**别删** —— 没有它,部署完这页会一直停在旧内容上,
+     人会以为「怎么改了没反应」(2026-09-14 那次白屏、2026-09-19 那次「界面完全没变」都沾这个边)。
+     只在本层后端底下才有 /api/health;当成 artifact 单开时 fetch 会失败,catch 掉即可。 */
+  (function () {
+    var seen = null;
+    function tick() {
+      fetch("api/health", { cache: "no-store" })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          /* 右上角那颗 sync = 最后一次连上本层的时刻(原来是参考图上的死数 11:57 PM)。
+             连不上就停在上一次的时刻,不假装刚同步过。 */
+          if (d) {
+            var t = new Date(), hh = t.getHours(), mm = t.getMinutes();
+            setText("syncAt", "sync · " + ((hh + 11) % 12 + 1) + ":" + (mm < 10 ? "0" : "") + mm + (hh < 12 ? " AM" : " PM"));
+          }
+          if (!d || !d.ver) return;
+          if (seen === null) { seen = d.ver; return; }
+          if (d.ver !== seen) location.reload();
+        })
+        .catch(function () {});
+    }
+    tick();
+    setInterval(tick, 30000);
+    document.addEventListener("visibilitychange", function () { if (!document.hidden) tick(); });
+  })();
+})();
+</script>
+
+</body>
+</html>
